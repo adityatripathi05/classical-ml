@@ -14,20 +14,20 @@ the seeded `_data/` universe.
 | Notebook | What it built | The result that mattered |
 |---|---|---|
 | 01.1 Rules or Learning? | The dunning rule, a logistic model, a gradient-boosting check, and a value metric | Both models beat the rule on precision (0.446, 0.453 vs 0.425) and **lost to it on money** ($49,665, $50,549 vs $51,362) |
-| 01.2 First Contact | The six-table universe, grain tests, join guards, a `Money` type, a nine-check contract | Summing `amount` across currencies overstated billings **34.21x**; the invoice/payment join moved 24,351 rows for a net of −1,603 |
-| 01.3 Reproducibility | Split lottery, seed-sensitivity audit, run manifest, `reproduce()` | `random_state` on the estimator **changes nothing**; the unpinned split moves precision by 0.0378, twice the improvement being claimed |
-| 01.4 Taxonomy | Four framings of one table, the API-as-taxonomy probe, capacity selection | **No threshold** delivers a fixed queue (1,773 at 0.3, 241 at 0.6); top-*k* does, at precision 0.6333 |
-| 01.5 Problem Framing | Label design space, break-even derivation, cost curve | Break-even precision **0.5556** against 0.0739 delivered — the model was never the bottleneck |
-| 01.6 Lifecycle | Eight instrumented stages, a seven-gate suite, defect injection | 5 of 7 defects caught offline; **2 mis-specifications passed every gate** |
+| 01.2 First Contact | The six-table universe, grain tests, join guards, a `Money` type, a nine-check contract | Summing `amount` across currencies overstated billings **34.21x**; the invoice/payment join moved 23,525 rows (12,564 dropped, 10,961 added) for a net of −1,603 |
+| 01.3 Reproducibility | Split lottery, seed-sensitivity audit, run manifest, `reproduce()` | `random_state` on the estimator **changes nothing**; the unpinned split moves the model's own precision by 0.0378, while the **paired** model-minus-rule delta moves only 0.0068 — so the claimed gain survives |
+| 01.4 Taxonomy | Four framings of one table, the API-as-taxonomy probe, capacity selection | A fixed threshold gives daily queues of **4 to 23 against a roster of about fifty**; top-*k* guarantees the size and catches **617 late invoices against 215** — while precision *falls*, because the queue is larger |
+| 01.5 Problem Framing | Label design space, break-even derivation, cost curve | Break-even precision **0.5556** against 0.0739 delivered — the model was never the bottleneck; and `predict_proba` under `class_weight="balanced"` is not a probability |
+| 01.6 Lifecycle | Eight instrumented stages, a seven-gate suite, defect injection | 5 of 6 injected defects caught offline; the wrong horizon reached production, and the survivorship defect could not be injected at all — it had to be measured |
 
 ## Incidents and the general lesson each carries
 
 | Incident | Mechanism | Transferable lesson |
 |---|---|---|
-| Green dashboard, rising overdue balance (01.1) | Gateway migration raised the late rate 0.263 → 0.389 while the score distribution held, so precision *rose* while recall collapsed 0.381 → 0.294 | Precision over a self-selected queue rises under label shift; monitor calibration and recall, not only self-computable metrics |
+| Green dashboard, rising overdue balance (01.1) | Gateway migration raised the late rate 0.263 → 0.389 while the score distribution held, so precision *rose* while recall collapsed 0.381 → 0.294 | Precision over a self-selected queue rises when the positive class grows denser; monitor calibration and recall, not only self-computable metrics |
 | Board deck 34x too high (01.2) | `amount` is denominated per-customer; summing across currencies adds unlike units, and pandas 3 concatenates the string column instead of erroring | A column whose meaning depends on a neighbour cannot be aggregated alone; prefer a constraint (a type) to a convention |
 | Blocked rollback (01.3) | The rollback target was a script, not an artifact; only code was versioned while data and split draw were not | Roll back to an immutable artifact; a run is a function of code, data *and* config |
-| Queue of 1,773 for three analysts (01.4) | Threshold selection makes queue size an output of a drifting score distribution; capacity is a constraint | Select by capacity when a fixed resource is consumed; the framing, not the model, was wrong |
+| A queue of 8 for a roster of 48 (01.4) | Threshold selection makes queue size an output of each day's invoice mix — 4 to 23 across twenty days, a 5.8× swing, never filling the roster; capacity is a constraint | Select by capacity when a fixed resource is consumed; the framing, not the model, was wrong |
 | Retention campaign with no effect (01.5) | Label counted a state (base rate 0.1149) not a time-bounded event (0.0207); business case inflated 5.6x; break-even unreachable | Compute break-even precision before funding; a base rate quoted without its label becomes a business case |
 | Fourteen months, all gates green (01.6) | Wrong horizon (7-day label vs 30-day escalation) and a survivorship population from an inner join | Gates certify implementation, never intent; an all-green suite under a failing project is itself the finding |
 
@@ -37,8 +37,12 @@ the seeded `_data/` universe.
    rule beside it. Random, rule, model — always three numbers.
 2. **Matched operating point.** Policies are compared at the same *k* or the same threshold, never
    at each one's most flattering point.
-3. **Noise band before winner.** A claimed improvement is meaningless until repeated refits or
-   resplits give the spread; deltas inside the band are not results.
+3. **Noise band before winner — and the band must match the quantity claimed.** A claimed
+   improvement is meaningless until repeated refits or resplits give the spread. But a *paired*
+   claim (model minus rule on identical rows) needs a *paired* band: judging it against the
+   marginal spread of either arm rejects supported results, because the shared noise cancels in
+   the difference. Here the model's own precision moves 0.0101 across holdouts while the
+   difference moves 0.0068.
 4. **Objective beside proxy.** The business quantity (money, queue quality) is reported next to
    the training metric, because they can move in opposite directions.
 5. **Evidence is executed.** Every number comes from committed lab code; anything else is marked
@@ -52,8 +56,11 @@ the seeded `_data/` universe.
 
 - **The survivorship population.** The modelling table is an inner join to payments, so every
   number in 01.1–01.6 describes invoices that were eventually paid, excluding 567 never-paid
-  invoices per evaluation window. Named and quantified in 01.6; **fixed properly in series 12**,
-  where population definition becomes part of validation.
+  invoices per evaluation window — mostly disputes and write-offs, an entire outcome class rather
+  than the largest by value. 01.6 measures the effect rather than asserting it: scoring the full
+  production population moves the base rate 0.2632 → 0.2782 and precision 0.4474 → 0.4586, so the
+  omission is real and the comparison survives it. **Fixed properly in series 12**, where
+  population definition becomes part of validation.
 - **Leakage treated informally.** `reminder_count` and `total_lifetime_value_usd` are excluded by
   hand with a stated reason. The taxonomy, temporal CV and nested selection are series 12's.
 - **Cleaning done in lab code, not taught.** Duplicate drops, comma parsing, dual timestamp
@@ -68,6 +75,26 @@ assume the seven invariants above as habits rather than as instructions, and eve
 draws from the same `_data/` universe with the grain and mess documented in `_data/SPEC.md`. The
 gate suite from 01.6 is the skeleton that series 34 rebuilds properly on FastAPI, PostgreSQL and
 Redis.
+
+## What the review changed
+
+This series was reviewed end-to-end after first authoring, and thirteen defects were found and
+corrected — including three places where prose contradicted the notebook's own captured output,
+four mechanisms that were explained wrongly, and four experiments that did not demonstrate what
+they claimed. `_review.md` records every finding with its fix and the evidence.
+
+Two of those are worth carrying as lessons in their own right, because they are the kind of
+mistake that survives a clean test suite:
+
+- **A comparison can be better determined than either number in it.** The series originally
+  judged a paired gain against a marginal spread and concluded the result was noise. It was not.
+  Pairing removes common-mode variation, which is why scoring the incumbent on the same rows is
+  not a courtesy but the thing that makes the measurement usable.
+- **A conclusion that survives correction is worth more than one that was never tested.** Several
+  headline claims changed under review — 01.4's win turned out to be recall rather than
+  precision, 01.6's leakage mechanism was wrong, 01.5's cancellation argument was a non-sequitur.
+  Each corrected version is a stronger argument than the one it replaced, and all of them were
+  found by reading against the evidence rather than by any automated check.
 
 ## How to revise this series
 

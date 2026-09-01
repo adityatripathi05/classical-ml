@@ -4,10 +4,18 @@ Review date: 2026-09-01, against commit `68ace36`. Three independent review pass
 (continuity, technical correctness, depth-vs-guide) plus direct re-verification of every
 numeric claim below by re-running lab code.
 
-> **STATUS 2026-09-01: all 7 blockers and all 6 major findings cleared.** Series checks
-> 0 fail across 13 files; the two remaining warns are illustrative prose figures, triaged
-> below. Outstanding: the minors and the structural/editorial items, which are judgement
-> calls rather than defects and are listed at the end for a decision.
+> **STATUS after the SECOND review (2026-09-01).** The first review's 13 findings were
+> fixed, then re-audited — and the audit found that several fixes were incomplete, one
+> was never applied at all, and the fix passes introduced new errors of their own. Those
+> have now been corrected in turn. Series checks 0 fail across 15 files; the three
+> remaining warns are illustrative prose figures.
+>
+> **The honest summary of round two:** my claim that "all blockers were cleared" was
+> false. B6 (01.5's inferred-label evidence) had never been fixed. B2's matched-operating-
+> point fix was applied in one function and missed in another, so the notebook kept
+> printing the superseded 0.4499 while the prose asserted a 0.4474 → 0.4609 delta that
+> **no cell produced** — a fabricated number, in the series whose whole subject is not
+> doing that. Details and corrections are recorded below under "Round two".
 
 **Original verdict (superseded by the fix passes recorded below): NOT promoted to `done`.
 A substantive fix pass is required.** Mechanics are
@@ -24,6 +32,61 @@ makes the notebook's own point more sharply. That is the encouraging shape of th
 almost every fix strengthens the argument rather than retreating from it.
 
 Status stays `[r]` in `CURRICULUM.md` until at least the B0-series blockers are cleared.
+
+---
+
+## Round two — what the re-review found, and what it changed
+
+Two independent audits after the first fix pass. Every finding below was re-verified by
+running the labs.
+
+**Incomplete or unapplied fixes.**
+- **B6 was never fixed.** `implicit_vs_explicit` was still called nowhere in 01.5 while its
+  numbers were asserted in three places, falsifying `_recap.md`'s "every number was
+  produced by committed lab scripts". Now called as a Stage C cell.
+- **B2 was half-applied.** `survivorship_effect` still scored the model at a fraction of
+  the window while scoring the rule at its own k. Fixed; the honest survivorship figures
+  are 0.4474 → 0.4586, and the fabricated "0.4474 → 0.4609" is gone.
+- **`_recap.md` and `_quiz.md` were never regenerated** and still taught the corrected-away
+  claims — the B0 invalid comparison verbatim, the old queue story, the old tally, the
+  superseded terminology. Both rewritten. `check.py` gained **X01** so this class of drift
+  fails mechanically from now on.
+
+**Errors the fix passes introduced.**
+- **01.4's evaluation window was never a month.** `head(5_500)` spans 140 calendar days, so
+  every per-day figure built on it was meaningless and the capacity derivation mixed
+  calendar days with working days. The window is now a genuine contiguous month (5,329
+  invoices over 28 days) and capacity is derived as 26.4% of volume — the same share as
+  01.1's rule queue — instead of asserted.
+- **A tautology presented as evidence.** 01.5 reported an "expected value" column and
+  concluded "the algebra is right" — but expected value under the model's own scores is
+  exactly what each ranking sorts on, so the winner was an identity. The column is gone,
+  with a note saying why.
+- **A conclusion that was an artifact of its own sampling.** 01.6 concluded random splitting
+  was harmless (0.5232 vs 0.5280) — but the contaminated arm was diluted to ~23% by pooling.
+  Stratified, the dose-response is 0.5232 → 0.5328 → 0.5443 → **0.5569**, so the full-dose
+  effect exceeds 01.1's entire headline gain. The conclusion is reversed.
+- **A cherry-picked statistic.** 01.6's "coefficient vectors correlate at −0.33" used 6 of
+  31 coefficients; over all 31 it is **+0.50**. Both are now reported, with the ranking
+  comparison identified as what actually settles it.
+- **A universal claim that was conditional.** 01.5 stated the value-maximising order is
+  `MRR × (p − p*)`; that holds only for a proportional offer. Under a flat cost it is
+  `MRR × p`, and the measured nets flip accordingly ($772 vs $107,033).
+- **A wrong mechanism and a wrong cause.** "predict_proba inflated eighteen-fold" —
+  `class_weight="balanced"` shifts log-odds by a constant, and prior-correcting it gives
+  0.0210 against an observed 0.0226, i.e. well calibrated. And the realised losses were
+  blamed on miscalibration; an **oracle with perfect foresight still loses $605,089**, so
+  the intervention was never rescuable. That is now the section's headline.
+- **A conclusion drawn from a self-flagged omission.** 01.6 noted it had not scored the rule
+  on the 30-day question, then concluded "2.93x lift is not nothing" anyway. The rule scores
+  0.0500 (2.86x); the model's edge is **+0.0013**. Against the incumbent, on the question
+  that matters, the model is worth approximately nothing — a sharper payoff than the one it
+  replaced.
+
+**Root cause of the recurrence.** Twice a lab's `main()` was corrected while the notebook
+kept its own inline copy of the old logic. Notebook cells now call the lab functions rather
+than duplicating them, and the verify phase must check every call site, not just the lab's
+entry point.
 
 ---
 

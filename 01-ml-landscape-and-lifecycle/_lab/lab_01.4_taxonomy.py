@@ -28,11 +28,23 @@ import pandas as pd
 
 HERE = Path(__file__).resolve().parent
 SEED = 42
-# PayFlow's collections capacity, stated ONCE for the whole series in daily terms:
-# 01.1's queue of 7,195 invoices spans the 5-month stable window (~151 days), i.e. ~48/day.
-CAPACITY_PER_DAY = 48
-MONTH_DAYS = 22         # working days, for converting a monthly window to a daily rate
+# PayFlow's collections capacity, stated ONCE for the series and consistent with 01.1:
+# the dunning rule queues 7,195 of the 27,290 invoices in the stable window, i.e. 26.4%.
+# Everything below is derived from that share and from the window's own CALENDAR-day span,
+# so the monthly and daily figures cannot drift apart into different operating points.
+CAPACITY_FRAC = 0.264
 THRESHOLD = 0.5         # the default nobody chose but everybody ships
+
+
+def eval_month(df: pd.DataFrame) -> pd.DataFrame:
+    """One CONTIGUOUS month of invoices, not a head() slice.
+
+    `head(5_500)` of the stable window looks like a month by row count but spans 140
+    calendar days, because the frame is not date-ordered - so every per-day figure derived
+    from it would be a sampled rate, not PayFlow's actual daily volume. Bounding by date
+    makes the daily arithmetic mean what it says.
+    """
+    return df.loc[(df["issue_date"] >= "2025-01-01") & (df["issue_date"] < "2025-02-01")]
 
 
 def load_sibling(filename: str, alias: str):
@@ -84,8 +96,11 @@ def build_framings(train: pd.DataFrame, test: pd.DataFrame) -> dict[str, np.ndar
     km.set_params(clf=KMeans(n_clusters=4, n_init=10, random_state=SEED))
     km.fit(X_tr)                                    # note: no y argument exists to pass
     clusters = km.predict(X_te)
-    print(f"\n  clustering assigned {len(np.unique(clusters))} groups, sizes "
-          f"{np.bincount(clusters).tolist()} - no notion of 'correct' anywhere")
+    sizes = np.bincount(clusters, minlength=4).tolist()
+    n_used = int(sum(s > 0 for s in sizes))
+    print(f"\n  clustering asked for 4 groups and used {n_used}, sizes {sizes} - one is")
+    print( "  empty, and nothing in the method calls that an error, because there is no")
+    print( "  notion of 'correct' anywhere in it")
     return {"regression": reg_pred, "classification": clf_scores, "clusters": clusters}
 
 
@@ -105,8 +120,10 @@ def framing_disagreement(test: pd.DataFrame, preds: dict, k: int) -> None:
         print(f"    {name:<22} precision={m['precision']:.4f}  "
               f"value=${lab11.value_captured(test, flag):>8,.0f}")
     gap = scored["classification top-k"] - scored["regression top-k"]
-    print(f"    precision gap between the two framings: {gap:.4f}  "
-          f"-> inside the 01.3 noise band, while 27% of the WORK differs")
+    paired_band = 0.0136          # 01.3's 2-sigma band on the paired delta
+    verdict = "inside" if abs(gap) <= paired_band else "just outside"
+    print(f"    precision gap between the two framings: {gap:.4f}  -> {verdict} 01.3's "
+          f"paired band of {paired_band:.4f}, while {1 - overlap / k:.0%} of the WORK differs")
 
 
 # ------------------------------------------------------ L3: the framing incident
@@ -119,21 +136,26 @@ def threshold_vs_capacity(test: pd.DataFrame, scores: np.ndarray) -> None:
     01.1 forbids - and it is the reason top-k's apparent precision edge is not a win.
     """
     y = test["late"].to_numpy()
-    print(f"  evaluation window: {len(test):,} invoices (~{len(test)/MONTH_DAYS:.0f} per "
-          f"day over {MONTH_DAYS} working days), actual late rate {test['late'].mean():.3f}")
+    span = test["issue_date"].nunique()          # calendar days actually covered
+    per_day = len(test) / span
+    k_month = int(round(CAPACITY_FRAC * len(test)))
+    cap_day = k_month / span
+    print(f"  evaluation window: {len(test):,} invoices over {span} calendar days "
+          f"(~{per_day:.0f}/day), actual late rate {test['late'].mean():.3f}")
+    print(f"  collections capacity: {CAPACITY_FRAC:.1%} of volume = {k_month:,} for this "
+          f"window, ~{cap_day:.0f}/day")
     print(f"  model mean predicted P(late): {scores.mean():.3f}, max {scores.max():.3f}\n")
     print(f"  {'operating point':<26}{'queue':>8}{'per day':>10}{'precision':>12}")
     for t in (0.3, 0.4, 0.5, 0.6):
         flag = scores >= t
         m = lab11.precision_recall_at_k(y, flag)
-        print(f"  {f'threshold {t:.1f}':<26}{m['k']:>8,}{m['k']/MONTH_DAYS:>10.0f}"
+        print(f"  {f'threshold {t:.1f}':<26}{m['k']:>8,}{m['k']/span:>10.0f}"
               f"{m['precision']:>12.4f}")
-    k_month = CAPACITY_PER_DAY * MONTH_DAYS
     top = lab11.topk_flag(scores, k_month)
     m = lab11.precision_recall_at_k(y, top)
     implied = float(np.sort(scores)[-k_month])
     print(f"  {f'top-{k_month:,} (capacity)':<26}{k_month:>8,}"
-          f"{CAPACITY_PER_DAY:>10}{m['precision']:>12.4f}")
+          f"{cap_day:>10.0f}{m['precision']:>12.4f}")
     print(f"\n  top-k is itself a threshold rule - here the implied cutoff is "
           f"{implied:.4f}. At a MATCHED")
     print( "  queue size the two selectors return the identical set, so capacity selection")
@@ -152,7 +174,8 @@ def threshold_vs_capacity(test: pd.DataFrame, scores: np.ndarray) -> None:
           f"capacity that was already being paid for")
 
 
-def daily_queue_swing(df: pd.DataFrame, train: pd.DataFrame, n_days: int = 20) -> None:
+def daily_queue_swing(df: pd.DataFrame, train: pd.DataFrame, n_days: int = 20,
+                      cap_day: int = 48) -> None:
     """The actual incident: a FIXED threshold on a MOVING daily score distribution.
 
     The threshold sweep above varies t on one pooled window; that is not what production
@@ -171,15 +194,15 @@ def daily_queue_swing(df: pd.DataFrame, train: pd.DataFrame, n_days: int = 20) -
                      "late_rate": float(d["late"].mean())})
     out = pd.DataFrame(rows)
     print(f"  a FIXED threshold of {THRESHOLD} applied to {len(out)} consecutive days, "
-          f"capacity {CAPACITY_PER_DAY}/day:")
+          f"capacity {cap_day}/day:")
     print(out.head(8).to_string(index=False))
     q = out["queued"]
     print(f"\n  queue size across days: min {q.min()}  median {q.median():.0f}  "
-          f"max {q.max()}  (capacity {CAPACITY_PER_DAY})")
-    print(f"  days that STARVE the team (queue < {CAPACITY_PER_DAY}): "
-          f"{int((q < CAPACITY_PER_DAY).sum())} of {len(q)}")
-    print(f"  days that FLOOD it (queue > {CAPACITY_PER_DAY}): "
-          f"{int((q > CAPACITY_PER_DAY).sum())} of {len(q)}")
+          f"max {q.max()}  (capacity {cap_day})")
+    print(f"  days that STARVE the team (queue < {cap_day}): "
+          f"{int((q < cap_day).sum())} of {len(q)}")
+    print(f"  days that FLOOD it (queue > {cap_day}): "
+          f"{int((q > cap_day).sum())} of {len(q)}")
     print(f"  ratio of the busiest day to the quietest: {q.max()/max(q.min(),1):.1f}x")
     print( "  the model never changed; only which invoices arrived that morning did")
 
@@ -303,7 +326,7 @@ def production_costs(train: pd.DataFrame, test: pd.DataFrame) -> None:
 def main() -> None:
     df, _ = lab11.build_dataset()
     w = lab11.windows(df)
-    train, test = w["train"], w["test_stable"].head(5_500)
+    train, test = w["train"], eval_month(df)
     k = int(lab11.dunning_rule(test).sum())
 
     print("=" * 78)
@@ -319,9 +342,10 @@ def main() -> None:
     print("\n" + "=" * 78)
     print("L3  THE INCIDENT - a fixed threshold against a capacity-shaped problem")
     print("=" * 78)
+    cap_day = int(round(CAPACITY_FRAC * len(test) / test["issue_date"].nunique()))
     threshold_vs_capacity(test, preds["classification"])
     print()
-    daily_queue_swing(df, train)
+    daily_queue_swing(df, train, cap_day=cap_day)
 
     print("\n" + "=" * 78)
     print("L4  THE ESTIMATOR API IS THE TAXONOMY")

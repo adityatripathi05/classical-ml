@@ -66,6 +66,8 @@ class Run:
     actual_rate: float = 0.0
     prod_precision: float | None = None
     business_precision: float | None = None    # against the question actually asked
+    business_baseline: float | None = None     # the rule, on that same question
+    business_base_rate: float | None = None
     manifest_hash: str = ""
 
 
@@ -143,10 +145,14 @@ def build_run(df_dedup: pd.DataFrame, df_raw: pd.DataFrame, defects: set[str]) -
 
     if "wrong_horizon" in defects:
         # Every gate below sees the >7d numbers and passes. Collections actually
-        # escalates at 30 days past due, so this is the precision that matters.
+        # escalates at 30 days past due, so this is the precision that matters - and
+        # it is quoted WITH the incumbent's score on the same question, because a lift
+        # without a baseline is the pitfall 01.1 opens with.
         y30 = (test["days_late"] > 30).to_numpy().astype(int)
         run.business_precision = lab11.precision_recall_at_k(
             y30, lab11.topk_flag(scores, capacity))["precision"]
+        run.business_baseline = lab11.precision_recall_at_k(y30, rule)["precision"]
+        run.business_base_rate = float(y30.mean())
 
     run.manifest_hash = hashlib.sha256(
         f"{sorted(feats)}|{split_kind}|{len(train)}".encode()).hexdigest()[:12]
@@ -271,7 +277,9 @@ def survivorship_effect(df_dedup: pd.DataFrame) -> None:
                          ("full production population", full)]:
         scores = lab11.fit_score(train, frame, seed=SEED)
         y = frame["late"].to_numpy()
-        k = int(round(CAPACITY_FRAC * len(frame)))
+        # Same matched-operating-point rule as build_run: score both policies at the
+        # rule's own k. Using a fraction here would reintroduce the B2 defect.
+        k = int(lab11.dunning_rule(frame).sum())
         m = lab11.precision_recall_at_k(y, lab11.topk_flag(scores, k))
         rule = lab11.precision_recall_at_k(y, lab11.dunning_rule(frame))
         print(f"  {label:<34} base rate {y.mean():.4f}   model prec {m['precision']:.4f}"
@@ -319,8 +327,19 @@ def leakage_mechanism(df_dedup: pd.DataFrame) -> None:
         flag = "  <- SIGN FLIP" if c_clean[i] * c_leaky[i] < 0 else ""
         print(f"  {name:<22}{c_clean[i]:>10.4f}{c_leaky[i]:>12.4f}{ratio:>9.2f}{flag}")
     print(f"  {LEAKY:<22}{'-':>10}{c_leaky[len(lab11.NUM)]:>12.4f}")
-    corr = np.corrcoef(c_clean, c_leaky[: len(lab11.NUM)])[0, 1]
-    print(f"\n  correlation between the two honest-coefficient vectors: {corr:+.2f}")
+    # Report the FULL coefficient vector, not just the six numeric ones: the 25 one-hot
+    # categorical coefficients also drive the ranking, and the correlation's sign reverses
+    # depending on which subset you take - so quoting the numeric-only figure alone would
+    # be choosing the number that suits the argument.
+    all_clean = clean.named_steps["clf"].coef_[0]
+    all_leaky = np.delete(leaky.named_steps["clf"].coef_[0], len(lab11.NUM))
+    print(f"\n  correlation between the honest-coefficient vectors:")
+    print(f"    over the {len(lab11.NUM)} NUMERIC coefficients only : "
+          f"{np.corrcoef(c_clean, c_leaky[: len(lab11.NUM)])[0, 1]:+.2f}")
+    print(f"    over all {len(all_clean)} coefficients             : "
+          f"{np.corrcoef(all_clean, all_leaky)[0, 1]:+.2f}")
+    print( "    the sign flips between the two, so neither number alone is the story -")
+    print( "    the ranking comparison below is what actually settles it.")
 
     prod = test.copy()
     prod[LEAKY] = 0                      # what serving time actually looks like
@@ -339,6 +358,39 @@ def report(r: Run, title: str) -> dict[str, bool]:
         results[name] = ok
         print(f"    [{'PASS' if ok else 'FAIL'}] {name:<24} {detail}")
     return results
+
+
+def random_split_doseresponse(df_dedup: pd.DataFrame) -> None:
+    """Hold the test rows fixed; vary the contamination SHARE deliberately."""
+    drift = lab11.windows(df_dedup)["test_drift"]
+    held_out, contemporaneous = train_test_split(drift, test_size=0.7, random_state=SEED)
+    pre_drift = lab11.windows(df_dedup)["train"]
+    y_h = held_out["late"].to_numpy()
+    k_h = int(lab11.dunning_rule(held_out).sum())
+    # Dose the contamination deliberately. Sampling from a pooled frame lets the much
+    # larger pre-drift pool dilute the treatment to whatever share it happens to be, and
+    # the measured effect then describes the dilution rather than the hazard.
+    print(f"           contaminated arms are STRATIFIED to a fixed contemporaneous share,")
+    print(f"           because pooling and sampling would let {len(pre_drift):,} pre-drift")
+    print(f"           rows dilute {len(contemporaneous):,} contemporaneous ones to ~23%:")
+    for share in (0.0, 0.25, 0.50, 1.0):
+        n_contemp = int(round(share * TRAIN_N))
+        parts = []
+        if n_contemp:
+            parts.append(contemporaneous.sample(n=min(n_contemp, len(contemporaneous)),
+                                                random_state=SEED))
+        if TRAIN_N - n_contemp > 0:
+            parts.append(pre_drift.sample(n=TRAIN_N - n_contemp, random_state=SEED))
+        tr = pd.concat(parts)
+        sc = lab11.fit_score(tr, held_out, seed=SEED)
+        p = lab11.precision_recall_at_k(y_h, lab11.topk_flag(sc, k_h))["precision"]
+        label = "honest (no contemporaneous rows)" if share == 0 else \
+                f"{share:.0%} contemporaneous"
+        if share == 0:
+            base_p = p
+        print(f"           {label:<34} precision on the SAME test rows: {p:.4f}"
+              + (f"   (+{p - base_p:.4f})" if share else ""))
+
 
 
 def main() -> None:
@@ -413,19 +465,7 @@ def main() -> None:
     print(f"           the textbook warning needs a regime change to bite.")
     print(f"           To isolate the effect the TEST SET must be held fixed, or the two")
     print(f"           splits are compared on populations with different base rates:")
-    drift = lab11.windows(df_dedup)["test_drift"]
-    held_out, contemporaneous = train_test_split(drift, test_size=0.7, random_state=SEED)
-    pre_drift = lab11.windows(df_dedup)["train"]
-    y_h = held_out["late"].to_numpy()
-    k_h = int(lab11.dunning_rule(held_out).sum())
-    for tag, tr in [("honest (pre-drift rows only)      ",
-                     pre_drift.sample(n=TRAIN_N, random_state=SEED)),
-                    ("contaminated (+ contemporaneous)  ",
-                     pd.concat([pre_drift, contemporaneous]).sample(n=TRAIN_N,
-                                                                    random_state=SEED))]:
-        sc = lab11.fit_score(tr, held_out, seed=SEED)
-        p = lab11.precision_recall_at_k(y_h, lab11.topk_flag(sc, k_h))["precision"]
-        print(f"           {tag} precision on the SAME test rows: {p:.4f}")
+    random_split_doseresponse(df_dedup)
 
     wrong = build_run(df_dedup, df_raw, {"wrong_horizon"})
     w_stable2 = lab11.windows(df_dedup)["test_stable"]
@@ -434,8 +474,13 @@ def main() -> None:
     print(f"           own 7-day label. Against the 30-day escalation the business runs on,")
     print(f"           the same ranking scores {wrong.business_precision:.4f} - and the "
           f"30-day base rate")
-    print(f"           is {base30:.4f}, so the model delivers "
-          f"{wrong.business_precision / base30:.2f}x lift on the question that matters")
+    print(f"           is {base30:.4f}: the model delivers "
+          f"{wrong.business_precision / base30:.2f}x lift there, but the RULE delivers")
+    print(f"           {wrong.business_baseline:.4f} ({wrong.business_baseline / base30:.2f}x) "
+          f"on the same question - an edge of "
+          f"{wrong.business_precision - wrong.business_baseline:+.4f}, which is inside every")
+    print(f"           band in this series. Against the incumbent, on the question that")
+    print(f"           matters, the model is worth approximately nothing.")
 
     print("\n" + "=" * 78)
     print("L4  DETECTION DISTANCE - stage introduced vs earliest gate that sees it")

@@ -538,14 +538,68 @@ def check_lab(path: Path) -> Report:
     return rep
 
 
+def series_number_pool(notebooks: list[Path]) -> tuple[set[str], set[str]]:
+    """Every number any notebook in the series actually printed or wrote in code.
+
+    `_quiz.md` and `_recap.md` quote notebook results, so when a notebook is corrected they
+    go stale silently - there is no execution to fail. Pooling the series' outputs lets the
+    companion documents be checked against them.
+    """
+    decs: set[str] = set()
+    ints: set[str] = set()
+    for nb_path in notebooks:
+        try:
+            nb = json.loads(nb_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            continue
+        for c in nb.get("cells", []):
+            if c.get("cell_type") != "code":
+                continue
+            blob = cell_source(c) + "\n" + outputs_text(c)
+            decs |= set(re.findall(r"\d+\.\d+", blob))
+            ints |= {m.replace(",", "").replace("_", "")
+                     for m in re.findall(r"\d{1,3}(?:[,_]\d{3})+", blob)}
+            ints |= set(re.findall(r"(?<![\d.])\d{4,}(?!\d)", blob))
+    return decs, ints
+
+
+def check_companion(path: Path, decs: set[str], ints: set[str]) -> Report:
+    """X01 - numbers in _quiz.md / _recap.md must appear in some notebook's output."""
+    rep = Report(path)
+    text = path.read_text(encoding="utf-8")
+    suspicious: list[str] = []
+    for ln in prose_lines(text):
+        low = ln.lower()
+        if any(w in low for w in NUMBER_CONTEXT_ALLOW):
+            continue
+        for num in re.findall(r"(?<![\d.\w])\d+\.\d+(?![\d.])", ln):
+            if re.fullmatch(r"\d{2}\.\d{1,2}", num) and 1 <= int(num.split(".")[0]) <= 35:
+                continue
+            if num not in decs and num not in suspicious:
+                suspicious.append(num)
+        for grouped in re.findall(r"\d{1,3}(?:,\d{3})+", ln):
+            if grouped.replace(",", "") not in ints and grouped not in suspicious:
+                suspicious.append(grouped)
+    if suspicious:
+        rep.warn("X01", f"number(s) not found in any notebook output in this series: "
+                        f"{', '.join(suspicious[:10])} — stale after a notebook change, "
+                        f"or illustrative?")
+    else:
+        rep.ok()
+    return rep
+
+
 def check_series(path: Path, strict: bool) -> list[Report]:
     reports: list[Report] = []
     notebooks = sorted(p for p in path.glob("*.ipynb") if ".ipynb_checkpoints" not in p.parts)
     for nb in notebooks:
         reports.append(check_notebook(nb))
+    decs, ints = series_number_pool(notebooks)
     quiz = path / "_quiz.md"
     if quiz.exists():
         reports.append(check_quiz(quiz))
+        if notebooks:
+            reports.append(check_companion(quiz, decs, ints))
     elif notebooks:
         r = Report(quiz)
         r.fail("Q00", "_quiz.md missing — it must be extended with every notebook (§11)")
@@ -558,10 +612,13 @@ def check_series(path: Path, strict: bool) -> list[Report]:
             r = Report(lab_dir / "README.md")
             r.warn("L04", "_lab/README.md missing (one page: what each script shows)")
             reports.append(r)
-    if notebooks and not (path / "_recap.md").exists():
-        r = Report(path / "_recap.md")
+    recap = path / "_recap.md"
+    if notebooks and not recap.exists():
+        r = Report(recap)
         r.warn("S02", "_recap.md not written yet (required when the series completes)")
         reports.append(r)
+    elif notebooks and recap.exists():
+        reports.append(check_companion(recap, decs, ints))
     if not reports:
         # A mistyped path that happens to be a directory would otherwise exit 0 and read
         # as a passing check. Say so instead.

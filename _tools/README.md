@@ -27,7 +27,15 @@ Related has id links · **bookish datasets (iris/titanic/make_blobs/…) without
 (WARN) · filler phrases (WARN) · seed hygiene (WARN). Quiz mode: "How to use" at top,
 exactly one `## Answers`, last section, and every `Q<n>` matched by an `A<n>` (markdown
 emphasis tolerated, so `**Q1.**` counts). Directory mode also warns (S03) when a folder
-contains nothing checkable, so a mistyped path cannot masquerade as a passing run. Lab mode: filename pattern,
+contains nothing checkable, so a mistyped path cannot masquerade as a passing run.
+
+**X01 — companion-document drift (directory mode only).** `_quiz.md` and `_recap.md` quote
+results from the notebooks, so when a notebook is corrected they go stale *silently* — there
+is no execution to fail and no output to contradict. X01 pools every number the series'
+notebooks actually printed and flags figures in the companion documents that are not in that
+pool. This rule exists because the same class of error slipped through twice: a notebook was
+fixed, its recap and quiz kept teaching the superseded numbers, and every other check stayed
+green. Lab mode: filename pattern,
 docstring naming the notebook, `__main__` guard.
 
 ## scaffold.py — template generator

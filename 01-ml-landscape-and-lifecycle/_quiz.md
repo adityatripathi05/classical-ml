@@ -123,7 +123,7 @@ Name the failure, and give the one-line change that fixes it today. *(01.4 — d
 the quantity a capacity-based selector fixes instead. *(01.4 — derive this)*
 
 **Q27.** The same features and rows framed as regression and as classification score within
-0.0039 of each other on precision but disagree on 27.0% of selected invoices. What do you
+0.0143 of each other on precision but disagree on 26.9% of selected invoices. What do you
 conclude, and what should decide the choice? *(01.4)*
 
 **Q28.** Your dispatch code branches on `hasattr(model, "predict_proba")`. Explain, with the
@@ -177,11 +177,11 @@ the number of defects does. *(01.6 — derive this)*
 **Q42.** Why can a test set fail to reveal a survivorship-biased training population, and what
 single artifact would make the bias checkable? *(01.6)*
 
-**Q43.** A leaked feature raised offline precision from 0.4499 to 0.7635. Explain why production
-precision (0.2956) ended up *worse* than the clean model's, rather than merely no better.
+**Q43.** A leaked feature raised offline precision from 0.4474 to 0.7572. Explain why production
+precision (0.2949) ended up *worse* than the clean model's, rather than merely no better.
 *(01.6)*
 
-**Q44.** Random splitting on time-ordered data cost 0.5232 against 0.5280 here — essentially
+**Q44.** Random splitting on time-ordered data cost 0.5232 at zero contamination against 0.5569 at full dose — essentially
 nothing. When does the textbook warning actually bite, and how would you measure it for your own
 problem without confounding the comparison? *(01.6)*
 
@@ -262,9 +262,9 @@ column kept its distribution, so any monitor watching inputs alone cannot see it
 requires comparing predictions against realized outcomes: calibration and recall against delayed
 ground truth. *(01.1)*
 
-**A10.** Because two large opposite effects cancelled: 12,529 invoices were dropped for having
-no payment and 11,822 rows were added by fan-out over the 10,921 invoices paid in two
-instalments — 24,351 rows moved to produce a net of −1,603. The real check is key cardinality:
+**A10.** Because two large opposite effects cancelled: 12,564 invoice rows were dropped for
+having no payment and 10,961 rows were added by fan-out over the 10,921 invoices paid in two
+instalments — 23,525 rows moved to produce a net of −1,603. The real check is key cardinality:
 `validate="m:1"` on the merge, which raises when the right-hand key is not unique, or
 aggregating the many-side to the join grain first. *(01.2)*
 
@@ -364,9 +364,7 @@ so that a changed result can be attributed to the specific input that moved. *(0
 probability, so its size is the mass of the score distribution above the cutoff and moves with
 that distribution and with each day's invoice mix, while the business constraint is a fixed
 headcount. Today's fix is to replace `scores >= t` with top-*k* selection at the team's capacity
-— one line, no retraining. ⚠️ Be careful what you claim for it: precision *falls* (0.6203 to
-0.4886) because the queue is larger, and the win is that the queue is filled at all — 516 late
-invoices caught against 263, roughly double, using capacity already being paid for. *(01.4)*
+— one line, no retraining. ⚠️ Be careful what you claim for it: precision *falls* (0.5718 to 0.4385) because the queue is larger, and the win is that the queue is filled at all — 617 late invoices caught against 215, roughly double, using capacity already being paid for. *(01.4)*
 
 **A26.** Queue size under a threshold is the count of scores at or above *t*, which equals *n*
 times the survival function of the score distribution at *t*; both *n* and that distribution move
@@ -434,7 +432,8 @@ decision time, because in production nothing after the cutoff exists yet. Violat
 direction is leakage; the label direction is the premise of supervised learning. *(01.5)*
 
 **A36.** Use it for ranking, since scarce positives are a real constraint and the denser label
-ranked slightly better here (+0.40x ± 0.37 across resplits — weak evidence, but free). Recalibrate
+ranked slightly better here, by about one standard deviation across resplits — weak evidence, but
+free). Recalibrate
 its scores to the operational base rate before feeding any expected-value computation. Never let
 its base rate reach a business case: inflated 5.6x, it sizes a prize that does not exist. *(01.5)*
 
@@ -460,7 +459,7 @@ recognises a state. *(01.5)*
 **A40.** Use the green suite as the diagnostic: it eliminates the whole class of implementation
 defects, so the remaining hypotheses are all about what the system was asked to do. Then compare
 the label's definition against the operational decision it feeds (a 7-day label against a 30-day
-escalation gave 0.0519 rather than the reported 0.4499); audit the training population for a
+escalation gave 0.0513 rather than the reported 0.4474); audit the training population for a
 silent join filter (567 never-paid invoices absent from every metric); and check whether the
 intervention could pay at achievable precision. The absence of a bug is the clue, not a dead end.
 *(01.6)*

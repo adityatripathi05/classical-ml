@@ -343,33 +343,59 @@ def cost_curve(f: pd.DataFrame, horizon: int = 180) -> None:
     # ranking, whose optimum is m_i*(p_i - p*). Below break-even every term is negative,
     # so weighting by MRR alone concentrates the LOSS - which is what the rows below show.
     k = max(1, int(round(0.10 * len(test))))
-    print(f"\n  MRR cancels from the go/no-go TEST (contact iff P > p* = {breakeven:.4f}),")
-    print(f"  never from the RANKING, whose objective is MRR x (P(churn) - p*).")
-    print(f"\n  WARNING, and it is the important finding here: this classifier is fitted")
-    print(f"  with class_weight='balanced', so predict_proba is a re-weighted SCORE, not a")
-    print(f"  calibrated probability. mean predicted {scores.mean():.4f} against an actual")
-    print(f"  rate of {y.mean():.4f}, max {scores.max():.4f} - inflated by roughly "
-          f"{scores.mean()/max(y.mean(),1e-9):.0f}x.")
-    print(f"  Feeding it into an expected-value formula therefore produces optimism that")
-    print(f"  realisation does not honour:")
+    # The break-even quantity under a PROPORTIONAL offer is MRR-weighted precision, not
+    # plain precision: both the saving and the cost scale with the customer's MRR.
+    flag_k = lab11.topk_flag(scores, k)
+    plain = lab11.precision_recall_at_k(y, flag_k)["precision"]
+    weighted = mrr[flag_k & (y == 1)].sum() / mrr[flag_k].sum()
+    print(f"\n  p* = {breakeven:.4f} is a break-even on MRR-WEIGHTED precision, because a")
+    print(f"  proportional offer makes both the saving and the cost scale with MRR.")
+    print(f"    plain precision@k     {plain:.4f}")
+    print(f"    MRR-weighted @k       {weighted:.4f}   <- the one that must clear p*")
+    print(f"    short by a factor of  {breakeven/max(weighted,1e-9):.0f}")
+
+    # Is the model the bottleneck? Ask an oracle that knows y perfectly.
+    oracle = lab11.topk_flag(y.astype(float) * mrr, k)
+    oracle_net = (SAVE_RATE * VALUE_MONTHS * mrr[oracle & (y == 1)].sum()
+                  - OFFER_MONTHS * mrr[oracle].sum())
+    print(f"\n  an ORACLE that knows the outcome perfectly, picking the k most valuable")
+    print(f"  true churners, still nets ${oracle_net:,.0f}. No ranking and no model can")
+    print(f"  rescue this campaign - the intervention itself is unprofitable.")
+
+    print(f"\n  the value-maximising ORDER depends on the cost structure, and only on that:")
+    print(f"    proportional offer c_i = offer x m_i -> E_i = m_i*s*V*(p_i - p*), order by "
+          f"m_i(p_i - p*)")
+    print(f"    flat cost c            -> E_i = m_i*s*V*p_i - c,       order by m_i*p_i")
+    print(f"  {'ranking':<26}{'proportional':>16}{'flat $40/contact':>20}")
     for tag, ranking in [("P(churn)", scores),
                          ("P(churn) x MRR", scores * mrr),
                          ("MRR x (P(churn) - p*)", mrr * (scores - breakeven))]:
         flag = lab11.topk_flag(ranking, k)
-        exp_net = float((mrr[flag] * SAVE_RATE * VALUE_MONTHS
-                         * (scores[flag] - breakeven)).sum())
-        net = (SAVE_RATE * VALUE_MONTHS * mrr[flag & (y == 1)].sum()
-               - OFFER_MONTHS * mrr[flag].sum())
-        print(f"    rank by {tag:<24} expected ${exp_net:>12,.0f}   realised ${net:>12,.0f}")
-    print( "    -> the algebra is right: MRR x (P - p*) does maximise EXPECTED value, above")
-    print( "       ranking by P alone. The objective is correct.")
-    print( "    -> naive P x MRR is the worst of the three by an order of magnitude, which")
-    print( "       is exactly what the cancellation argument gets wrong: MRR drops out of")
-    print( "       the THRESHOLD, not the ranking, and weighting by it alone buys expensive")
-    print( "       customers whose losses scale with their MRR.")
-    print( "    -> every realised figure is negative anyway, because the probabilities fed")
-    print( "       to the cost model are not probabilities. Calibrate before costing:")
-    print( "       a score can rank well and still destroy an expected-value calculation.")
+        saved = SAVE_RATE * VALUE_MONTHS * mrr[flag & (y == 1)].sum()
+        prop = saved - OFFER_MONTHS * mrr[flag].sum()
+        flat = saved - 40.0 * flag.sum()
+        print(f"  {tag:<26}${prop:>15,.0f}${flat:>19,.0f}")
+    print( "  -> neither ordering is universally right. Under the proportional offer every")
+    print( "     option loses; under a flat cost P x MRR is the best of the three, which is")
+    print( "     the ordering the proportional analysis would have told you to avoid.")
+    print( "  (Note we do NOT report an 'expected value' column: expected value under the")
+    print( "   model's own scores is exactly what each ranking sorts on, so the winner there")
+    print( "   is an identity, not evidence.)")
+
+    # What class_weight="balanced" actually does to the scores.
+    pi = float(train["churns_in_horizon"].mean())
+    odds = scores / (1 - scores)
+    cal = odds * pi / (1 - pi)
+    cal = cal / (1 + cal)
+    print(f"\n  a note on the scores: class_weight='balanced' shifts the LOG-ODDS by a")
+    print(f"  constant (multiplier (1-pi)/pi = {(1-pi)/pi:.1f} at pi={pi:.4f}), it does not")
+    print(f"  scale probabilities. Undo that shift and the model is well calibrated overall:")
+    print(f"    raw mean {scores.mean():.4f}  ->  prior-corrected {cal.mean():.4f}   "
+          f"observed {y.mean():.4f}")
+    print(f"    the distortion is {np.sort(scores)[len(scores)//2]/max(np.sort(cal)[len(cal)//2],1e-9):.0f}x "
+          f"at the median and {scores.max()/max(cal.max(),1e-9):.1f}x at the top, so 'inflated")
+    print(f"    N-fold' is not a well-defined statement. The scores RANK fine; what they")
+    print(f"    carry is the wrong prior, which matters the moment they enter a cost model.")
 
     print("\n  does value-weighted targeting help, as it did for dunning in 01.1?")
     for cost_label, unit_cost, scales in [("proportional offer (0.25 months of MRR)", None, True),
