@@ -10,7 +10,8 @@ Reproduces every captured number and listing in 01.4:
   L5  label availability - why unsupervised methods exist at all (censoring by recency)
   L6  what the choice costs in production: parametric vs non-parametric, batch vs online
 
-Reuses the 01.1 dataset builder. Runtime ~2 min on CPU (the KNN latency probe dominates).
+Reuses the 01.1 dataset builder. Runtime ~5 min on CPU (the framing-band refits and the
+KNN latency probe dominate).
 
 Run:  .venv\\Scripts\\python "01-ml-landscape-and-lifecycle/_lab/lab_01.4_taxonomy.py"
 """
@@ -28,11 +29,11 @@ import pandas as pd
 
 HERE = Path(__file__).resolve().parent
 SEED = 42
-# PayFlow's collections capacity, stated ONCE for the series and consistent with 01.1:
-# the dunning rule queues 7,195 of the 27,290 invoices in the stable window, i.e. 26.4%.
-# Everything below is derived from that share and from the window's own CALENDAR-day span,
-# so the monthly and daily figures cannot drift apart into different operating points.
-CAPACITY_FRAC = 0.264
+# PayFlow's collections roster, stated ONCE for the series and consistent with 01.1:
+# the dunning rule queues 7,195 of the stable window's invoices over its 151 calendar
+# days, ~47.6/day -> a roster of 48. Every monthly figure below is CAP_DAY times the
+# window's own day span, so daily and monthly capacity cannot drift apart.
+CAP_DAY = 48
 THRESHOLD = 0.5         # the default nobody chose but everybody ships
 
 
@@ -94,7 +95,7 @@ def build_framings(train: pd.DataFrame, test: pd.DataFrame) -> dict[str, np.ndar
 
     km = lab11.make_model()
     km.set_params(clf=KMeans(n_clusters=4, n_init=10, random_state=SEED))
-    km.fit(X_tr)                                    # note: no y argument exists to pass
+    km.fit(X_tr)             # y is accepted (and ignored) by convention; nothing supervises this fit
     clusters = km.predict(X_te)
     sizes = np.bincount(clusters, minlength=4).tolist()
     n_used = int(sum(s > 0 for s in sizes))
@@ -104,7 +105,42 @@ def build_framings(train: pd.DataFrame, test: pd.DataFrame) -> dict[str, np.ndar
     return {"regression": reg_pred, "classification": clf_scores, "clusters": clusters}
 
 
-def framing_disagreement(test: pd.DataFrame, preds: dict, k: int) -> None:
+def framing_band(pool: pd.DataFrame, n_runs: int = 8) -> tuple[float, float]:
+    """The paired band for THIS comparison: classification-minus-regression top-k.
+
+    01.3's 0.0136 band belongs to a different pair (model minus rule); borrowing it here
+    would judge one comparison by another comparison's noise - invariant 3's own error,
+    one level up. The two framings correlate less across evaluation draws than the model
+    and the rule do, so the borrowed band understates the noise. Measure the right one.
+    Runtime ~2 min CPU (8 refits of each framing on ~154k rows).
+    """
+    from sklearn.linear_model import LinearRegression
+    from sklearn.model_selection import train_test_split
+    p_cs, p_rs = [], []
+    for s in range(n_runs):
+        tr, te = train_test_split(pool, test_size=5_500, random_state=s)
+        kk = int(lab11.dunning_rule(te).sum())
+        y = te["late"].to_numpy()
+        clf_scores = lab11.fit_score(tr, te, seed=SEED)
+        reg = lab11.make_model()
+        reg.set_params(clf=LinearRegression())
+        reg.fit(tr[lab11.NUM + lab11.CAT], tr["days_late"])
+        reg_pred = reg.predict(te[lab11.NUM + lab11.CAT])
+        p_cs.append(lab11.precision_recall_at_k(y, lab11.topk_flag(clf_scores, kk))["precision"])
+        p_rs.append(lab11.precision_recall_at_k(y, lab11.topk_flag(reg_pred, kk))["precision"])
+    d = np.asarray(p_cs) - np.asarray(p_rs)
+    mean, band = float(d.mean()), float(2 * d.std(ddof=1))
+    corr = float(np.corrcoef(p_cs, p_rs)[0, 1])
+    print(f"  paired band for THIS comparison, over {n_runs} evaluation redraws:")
+    print(f"    clf-minus-reg delta: mean {mean:+.4f}   2-sigma band {band:.4f}")
+    print(f"    the two framings correlate at {corr:.2f} across draws - less than the")
+    print(f"    model and the rule do in 01.3, so less of the noise is common-mode and")
+    print(f"    the borrowed band would understate this comparison's spread")
+    return mean, band
+
+
+def framing_disagreement(test: pd.DataFrame, preds: dict, k: int,
+                         band: float | None = None) -> None:
     """Do the framings pick the same invoices? If not, the framing IS the decision."""
     top_reg = lab11.topk_flag(preds["regression"], k)
     top_clf = lab11.topk_flag(preds["classification"], k)
@@ -120,10 +156,13 @@ def framing_disagreement(test: pd.DataFrame, preds: dict, k: int) -> None:
         print(f"    {name:<22} precision={m['precision']:.4f}  "
               f"value=${lab11.value_captured(test, flag):>8,.0f}")
     gap = scored["classification top-k"] - scored["regression top-k"]
-    paired_band = 0.0136          # 01.3's 2-sigma band on the paired delta
-    verdict = "inside" if abs(gap) <= paired_band else "just outside"
-    print(f"    precision gap between the two framings: {gap:.4f}  -> {verdict} 01.3's "
-          f"paired band of {paired_band:.4f}, while {1 - overlap / k:.0%} of the WORK differs")
+    if band is not None:
+        verdict = ("inside" if abs(gap) <= band else "outside")
+        tail = ("indistinguishable in quality" if abs(gap) <= band
+                else "a quality difference")
+        print(f"    precision gap between the two framings: {gap:.4f}  -> {verdict} the "
+              f"{band:.4f} band measured for this pair: {tail}, while "
+              f"{1 - overlap / k:.0%} of the WORK differs")
 
 
 # ------------------------------------------------------ L3: the framing incident
@@ -138,12 +177,11 @@ def threshold_vs_capacity(test: pd.DataFrame, scores: np.ndarray) -> None:
     y = test["late"].to_numpy()
     span = test["issue_date"].nunique()          # calendar days actually covered
     per_day = len(test) / span
-    k_month = int(round(CAPACITY_FRAC * len(test)))
-    cap_day = k_month / span
+    k_month = CAP_DAY * span                     # the roster, over this window's days
     print(f"  evaluation window: {len(test):,} invoices over {span} calendar days "
           f"(~{per_day:.0f}/day), actual late rate {test['late'].mean():.3f}")
-    print(f"  collections capacity: {CAPACITY_FRAC:.1%} of volume = {k_month:,} for this "
-          f"window, ~{cap_day:.0f}/day")
+    print(f"  collections roster: {CAP_DAY}/day x {span} days = {k_month:,} slots for "
+          f"this window ({k_month / len(test):.1%} of volume)")
     print(f"  model mean predicted P(late): {scores.mean():.3f}, max {scores.max():.3f}\n")
     print(f"  {'operating point':<26}{'queue':>8}{'per day':>10}{'precision':>12}")
     for t in (0.3, 0.4, 0.5, 0.6):
@@ -155,7 +193,7 @@ def threshold_vs_capacity(test: pd.DataFrame, scores: np.ndarray) -> None:
     m = lab11.precision_recall_at_k(y, top)
     implied = float(np.sort(scores)[-k_month])
     print(f"  {f'top-{k_month:,} (capacity)':<26}{k_month:>8,}"
-          f"{cap_day:>10.0f}{m['precision']:>12.4f}")
+          f"{CAP_DAY:>10.0f}{m['precision']:>12.4f}")
     print(f"\n  top-k is itself a threshold rule - here the implied cutoff is "
           f"{implied:.4f}. At a MATCHED")
     print( "  queue size the two selectors return the identical set, so capacity selection")
@@ -174,36 +212,51 @@ def threshold_vs_capacity(test: pd.DataFrame, scores: np.ndarray) -> None:
           f"capacity that was already being paid for")
 
 
-def daily_queue_swing(df: pd.DataFrame, train: pd.DataFrame, n_days: int = 20,
-                      cap_day: int = 48) -> None:
+def daily_queue_swing(df: pd.DataFrame, n_days: int = 20,
+                      cap_day: int = CAP_DAY) -> None:
     """The actual incident: a FIXED threshold on a MOVING daily score distribution.
 
     The threshold sweep above varies t on one pooled window; that is not what production
     does. Production holds t fixed and meets a different day's invoices every morning.
+
+    Era-consistent evidence: the model live in spring 2026 is the one RETRAINED on the
+    post-migration regime (01.1's permanent fix, mid-2025) - so that model is fitted
+    once, then scores each day, exactly as the scoring job does. Scoring these days with
+    the stale pre-2025 model would manufacture a more dramatic starvation out of 01.1's
+    drift incident, which is a different failure.
     """
-    window = df.loc[(df["issue_date"] >= "2025-07-01") & (df["issue_date"] < "2026-05-31")]
-    days = sorted(window["issue_date"].unique())[:n_days]
-    rows = []
+    post = df.loc[(df["issue_date"] >= lab11.MIGRATION)
+                  & (df["issue_date"] < "2026-01-01")]
+    model = lab11.make_model()
+    model.fit(post[lab11.NUM + lab11.CAT], post["late"])    # fitted ONCE, like production
+    window = df.loc[(df["issue_date"] >= "2026-03-01") & (df["issue_date"] < "2026-04-14")]
+    days = [d for d in sorted(window["issue_date"].unique())
+            if (window["issue_date"] == d).sum() >= 30][-n_days:]
+    rows, pooled_pred, pooled_actual, pooled_n = [], 0.0, 0.0, 0
     for day in days:
         d = window.loc[window["issue_date"] == day]
-        if len(d) < 30:
-            continue
-        sc = lab11.fit_score(train, d, seed=SEED)
+        sc = model.predict_proba(d[lab11.NUM + lab11.CAT])[:, 1]
+        pooled_pred += float(sc.sum())
+        pooled_actual += float(d["late"].sum())
+        pooled_n += len(d)
         rows.append({"day": pd.Timestamp(day).date(), "invoices": len(d),
                      "queued": int((sc >= THRESHOLD).sum()),
                      "late_rate": float(d["late"].mean())})
     out = pd.DataFrame(rows)
-    print(f"  a FIXED threshold of {THRESHOLD} applied to {len(out)} consecutive days, "
-          f"capacity {cap_day}/day:")
-    print(out.head(8).to_string(index=False))
+    print(f"  a FIXED threshold of {THRESHOLD} applied to {len(out)} consecutive days "
+          f"({out['day'].iloc[0]} .. {out['day'].iloc[-1]}), roster {cap_day}/day:")
+    print(out.tail(8).to_string(index=False))
     q = out["queued"]
     print(f"\n  queue size across days: min {q.min()}  median {q.median():.0f}  "
-          f"max {q.max()}  (capacity {cap_day})")
+          f"max {q.max()}  (roster {cap_day})")
     print(f"  days that STARVE the team (queue < {cap_day}): "
           f"{int((q < cap_day).sum())} of {len(q)}")
     print(f"  days that FLOOD it (queue > {cap_day}): "
           f"{int((q > cap_day).sum())} of {len(q)}")
+    print(f"  days the queue MATCHES the roster: {int((q == cap_day).sum())} of {len(q)}")
     print(f"  ratio of the busiest day to the quietest: {q.max()/max(q.min(),1):.1f}x")
+    print(f"  pooled over these days: mean predicted {pooled_pred / pooled_n:.3f} vs "
+          f"realized late rate {pooled_actual / pooled_n:.3f} - the model is not at fault")
     print( "  the model never changed; only which invoices arrived that morning did")
 
 
@@ -277,17 +330,18 @@ def production_costs(train: pd.DataFrame, test: pd.DataFrame) -> None:
     from sklearn.neighbors import KNeighborsClassifier
 
     sub_tr = train.sample(n=20_000, random_state=SEED)
-    sub_te = test.head(2_000)
+    sub_te = test.head(5_000)
     X_tr, y_tr = sub_tr[lab11.NUM + lab11.CAT], sub_tr["late"]
     X_te = sub_te[lab11.NUM + lab11.CAT]
 
     def timed(model, label: str) -> tuple[float, float]:
-        """Artifact size is deterministic; wall-clock timing is not. Report both, but
-        the RATIO between models is the quantity that survives a different machine."""
+        """Artifact size is deterministic; wall-clock timing is not. Report both. Even
+        the RATIO wobbles run to run (7-11x across our reruns), so it is quoted as an
+        order of magnitude, never as a constant - median of 7 reps to damp the noise."""
         model.fit(X_tr, y_tr)
         size = len(pickle.dumps(model)) / 1024
         times = []
-        for _ in range(3):
+        for _ in range(7):
             t0 = time.perf_counter()
             model.predict(X_te)
             times.append((time.perf_counter() - t0) / len(X_te) * 1e6)
@@ -303,7 +357,8 @@ def production_costs(train: pd.DataFrame, test: pd.DataFrame) -> None:
     print(f"  ratios (non-parametric / parametric): artifact {size_n / size_p:,.0f}x   "
           f"latency {time_n / time_p:.1f}x")
     print(f"  (fitted on {len(sub_tr):,} rows, timed over {len(sub_te):,} predictions;")
-    print(f"   absolute microseconds are machine- and run-dependent, the ratio is not)")
+    print(f"   the artifact ratio is exact; the latency ratio is machine- and")
+    print(f"   run-dependent - read it as an order of magnitude, not a constant)")
     print("  the non-parametric model IS its training data: the rows ship to production")
 
     sgd = lab11.make_model()
@@ -337,15 +392,15 @@ def main() -> None:
     print("\n" + "-" * 78)
     print("L2  DO THE FRAMINGS AGREE ON WHICH INVOICES MATTER?")
     print("-" * 78)
-    framing_disagreement(test, preds, k)
+    _, band = framing_band(train)
+    framing_disagreement(test, preds, k, band=band)
 
     print("\n" + "=" * 78)
     print("L3  THE INCIDENT - a fixed threshold against a capacity-shaped problem")
     print("=" * 78)
-    cap_day = int(round(CAPACITY_FRAC * len(test) / test["issue_date"].nunique()))
     threshold_vs_capacity(test, preds["classification"])
     print()
-    daily_queue_swing(df, train, cap_day=cap_day)
+    daily_queue_swing(df)
 
     print("\n" + "=" * 78)
     print("L4  THE ESTIMATOR API IS THE TAXONOMY")

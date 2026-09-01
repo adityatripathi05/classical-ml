@@ -16,7 +16,7 @@ the seeded `_data/` universe.
 | 01.1 Rules or Learning? | The dunning rule, a logistic model, a gradient-boosting check, and a value metric | Both models beat the rule on precision (0.446, 0.453 vs 0.425) and **lost to it on money** ($49,665, $50,549 vs $51,362) |
 | 01.2 First Contact | The six-table universe, grain tests, join guards, a `Money` type, a nine-check contract | Summing `amount` across currencies overstated billings **34.21x**; the invoice/payment join moved 23,525 rows (12,564 dropped, 10,961 added) for a net of −1,603 |
 | 01.3 Reproducibility | Split lottery, seed-sensitivity audit, run manifest, `reproduce()` | `random_state` on the estimator **changes nothing**; the unpinned split moves the model's own precision by 0.0378, while the **paired** model-minus-rule delta moves only 0.0068 — so the claimed gain survives |
-| 01.4 Taxonomy | Four framings of one table, the API-as-taxonomy probe, capacity selection | A fixed threshold gives daily queues of **4 to 23 against a roster of about fifty**; top-*k* guarantees the size and catches **617 late invoices against 215** — while precision *falls*, because the queue is larger |
+| 01.4 Taxonomy | Four framings of one table, the API-as-taxonomy probe, capacity selection | A fixed threshold gives daily queues of **28 to 53 against a roster of 48 — matching it on none of twenty days**; top-*k* guarantees the size and catches **590 late invoices against 215** — while precision *falls*, because the queue is larger |
 | 01.5 Problem Framing | Label design space, break-even derivation, cost curve | Break-even precision **0.5556** against 0.0739 delivered — the model was never the bottleneck; and `predict_proba` under `class_weight="balanced"` is not a probability |
 | 01.6 Lifecycle | Eight instrumented stages, a seven-gate suite, defect injection | 5 of 6 injected defects caught offline; the wrong horizon reached production, and the survivorship defect could not be injected at all — it had to be measured |
 
@@ -27,7 +27,7 @@ the seeded `_data/` universe.
 | Green dashboard, rising overdue balance (01.1) | Gateway migration raised the late rate 0.263 → 0.389 while the score distribution held, so precision *rose* while recall collapsed 0.381 → 0.294 | Precision over a self-selected queue rises when the positive class grows denser; monitor calibration and recall, not only self-computable metrics |
 | Board deck 34x too high (01.2) | `amount` is denominated per-customer; summing across currencies adds unlike units, and pandas 3 concatenates the string column instead of erroring | A column whose meaning depends on a neighbour cannot be aggregated alone; prefer a constraint (a type) to a convention |
 | Blocked rollback (01.3) | The rollback target was a script, not an artifact; only code was versioned while data and split draw were not | Roll back to an immutable artifact; a run is a function of code, data *and* config |
-| A queue of 8 for a roster of 48 (01.4) | Threshold selection makes queue size an output of each day's invoice mix — 4 to 23 across twenty days, a 5.8× swing, never filling the roster; capacity is a constraint | Select by capacity when a fixed resource is consumed; the framing, not the model, was wrong |
+| A queue of 37 for a roster of 48 (01.4) | Threshold selection makes queue size an output of each day's invoice mix — 28 to 53 across twenty days, starving the roster on eighteen days and flooding it on two; capacity is a constraint | Select by capacity when a fixed resource is consumed; the framing, not the model, was wrong |
 | Retention campaign with no effect (01.5) | Label counted a state (base rate 0.1149) not a time-bounded event (0.0207); business case inflated 5.6x; break-even unreachable | Compute break-even precision before funding; a base rate quoted without its label becomes a business case |
 | Fourteen months, all gates green (01.6) | Wrong horizon (7-day label vs 30-day escalation) and a survivorship population from an inner join | Gates certify implementation, never intent; an all-green suite under a failing project is itself the finding |
 
@@ -78,10 +78,15 @@ Redis.
 
 ## What the review changed
 
-This series was reviewed end-to-end after first authoring, and thirteen defects were found and
-corrected — including three places where prose contradicted the notebook's own captured output,
-four mechanisms that were explained wrongly, and four experiments that did not demonstrate what
-they claimed. `_review.md` records every finding with its fix and the evidence.
+This series was reviewed end-to-end after first authoring — three rounds — and each round found
+defects the previous one's fixes had missed or introduced: prose contradicting the notebook's
+own captured output, mechanisms explained wrongly, experiments that did not demonstrate what
+they claimed, and companion documents still teaching corrected-away claims. `_review.md`
+records every finding with its fix and the evidence. Round three's headline findings: 01.4's
+incident evidence had been produced by the wrong-era model (rebuilt era-consistently, the
+queues are 28–53, not 4–23); 01.4 judged its framing gap against a band borrowed from a
+different comparison (measured properly, the verdict flips to "indistinguishable"); and 01.6
+carried a "barely moves ranking" story that its own +0.0337 dose-response contradicted.
 
 Two of those are worth carrying as lessons in their own right, because they are the kind of
 mistake that survives a clean test suite:

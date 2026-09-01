@@ -70,9 +70,14 @@ def score_hash(scores: np.ndarray) -> str:
 
 
 def frame_hash(df: pd.DataFrame) -> str:
-    """Content address of a data slice, so 'which data' is a recorded fact not a memory."""
-    key = pd.util.hash_pandas_object(df.sort_index(axis=1), index=True).to_numpy()
-    return hashlib.sha256(key.tobytes()).hexdigest()[:12]
+    """Content address of a data slice, so 'which data' is a recorded fact not a memory.
+
+    Columns are canonicalised by sorting; per-row hashes are sorted too, so the SAME rows
+    in a different order produce the SAME digest - a content address must not depend on
+    the order a query happened to return.
+    """
+    key = pd.util.hash_pandas_object(df.sort_index(axis=1), index=False).to_numpy()
+    return hashlib.sha256(np.sort(key).tobytes()).hexdigest()[:12]
 
 
 # ------------------------------------------------------------- L1: the split lottery

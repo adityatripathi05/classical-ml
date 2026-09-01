@@ -1,5 +1,12 @@
 # Series 01 — end-to-end review findings
 
+> **ROUND THREE (2026-09-01, against `da03aa7`) — independent re-review.** Every "FIXED"
+> claim below was treated as unverified and re-checked by re-running the labs. The round-two
+> pattern repeated: several round-one findings were never actioned, one round-two fix left a
+> stale contradiction in place, and two substantive new defects were found. Recorded at the
+> bottom under "Round three". All fixes applied in the same pass; every notebook regenerated
+> and re-executed; series checks clean.
+
 Review date: 2026-09-01, against commit `68ace36`. Three independent review passes
 (continuity, technical correctness, depth-vs-guide) plus direct re-verification of every
 numeric claim below by re-running lab code.
@@ -521,3 +528,92 @@ produced B4.
   section subject. The single marginal case is `api_surface()` in 01.4.
 - Baseline-first is genuinely carried, not mentioned once: the rule is the floor in all six,
   runs in shadow in 01.1, becomes gate G4 in 01.6, and overtakes the model in the drift window.
+
+---
+
+## Round three — independent re-review (2026-09-01, against `da03aa7`)
+
+Method: read every notebook's prose against its captured output cell by cell; re-ran all six
+labs; recomputed load-bearing claims independently. The three prior-round warnings all
+recurred: unfixed round-one findings, a half-propagated fix, and a companion document still
+teaching a corrected-away mechanism.
+
+**New blockers (found this round).**
+
+- **R3-B1 · 01.4's incident evidence came from the wrong-era model.** The April-2026 incident
+  was evidenced by `daily_queue_swing` scoring July-2025 days with the stale pre-2025 model —
+  the model the series' own continuity says was retrained away in mid-2025 (and July 2025 is
+  01.1's drift window, a different failure). Re-run era-consistently — post-migration-trained
+  model, twenty spring-2026 days, t=0.5 — the queues are 28–53 against the 48 roster (18 days
+  starve, 2 flood, 0 match, 1.9x swing), not the published 4–23 with a 5.8x swing. The
+  mechanism survives; every number in the cold open, Symptoms, Diagnosis and Root Cause had to
+  change. The lab now also fits the model once outside the day loop (it was refitting per day)
+  and prints pooled predicted-vs-realized so "the model is not at fault" is captured, not
+  asserted. Quiz Q25/A25/A26 and the recap rows updated.
+- **R3-B2 · 01.4 judged its framing gap against a borrowed band, and the verdict flips.** The
+  0.0143 classification-vs-regression gap was called "just outside" 01.3's 0.0136 band — but
+  that band belongs to the model-vs-rule pair. Measured for the right pair (8 evaluation
+  redraws, both framings refitted; corr 0.62 vs the model/rule 0.785), the 2-sigma band is
+  0.0197 and the gap sits INSIDE it: the framings are indistinguishable on quality, which
+  strengthens the section's real point (27% of the work differs anyway). `framing_band()` is
+  now committed and the notebook computes it live. This is invariant 3's own error — "the band
+  must match the quantity claimed" — committed by the series a third time.
+- **R3-B3 · 01.6 contradicted its own dose-response.** The closing paragraph still said the
+  subpopulation shift "repairs calibration and barely moves ranking" while the same section
+  reports full-dose contemporaneous training worth +0.0337 — larger than the series' headline
+  gain — and 01.1's own regime refit shows +0.036 at matched k. Corrected mechanism: uniform
+  shift WITHIN the migrated group preserves within-group order but reorders the groups against
+  each other, so seeing the new regime buys a real cross-group ranking gain. Quiz A44 carried
+  the same dead story (and Q44 still said "essentially nothing" next to numbers showing the
+  opposite); both rewritten.
+- **R3-B4 · stale self-contradiction in 01.6.** The wrong-horizon section scored the rule on
+  the 30-day question AND kept the prior draft's "note the notebook does not score the rule on
+  that question" caveat two sentences later. Caveat deleted.
+- **R3-B5 · quiz A43 still taught the refuted leakage mechanism** ("displaced/under-weighted
+  signal") that 01.6's B0c fix explicitly rules out; A26 still cited pre-B1 numbers (300
+  capacity, 818 at t=0.4, 241 at t=0.6) that no current cell produces. Both rewritten.
+
+**Round-one findings that had never been actioned (now fixed).**
+
+- 01.1's "six weeks" timeline (4 sites + 2 in 01.6 + 1 in quiz) against its own 07-01→07-15
+  dates; Prevention's "paged on 2025-07-14, six weeks earlier" (one day earlier).
+- 01.1's 0.297 pooled base rate framed as "the number every claim gets measured against"
+  (claims are measured against the stable window's 0.263); "twenty-six thousand invoices".
+- `make_boosted` docstring claiming native categorical handling while one-hotting.
+- 01.1 Interview Q1's garbled precision@k derivation (denominator is fixed at k).
+- 01.2 Common Pitfalls attributing the 1,366,049-char string to 288,936 values (it is the
+  200,000-row probe's); quiz A13 likewise.
+- 01.2's reconciliation presented as "two independent derivations" — both sides draw on the
+  same `fx_rate_usd` column; reworded to what it actually validates (aggregation, not rates).
+- 01.2's fan-out decomposition not closing (10,961 added vs "10,921 invoices in two
+  instalments") — the missing 40 are M1-duplicated rows that also fan out; now printed.
+- 01.3's 2026-03 incident quoting 2025 pool numbers as its own months; "Twelve draws" over a
+  six-draw cell; `frame_hash` row-order/index dependence (now sorted row-hashes, index=False).
+- 01.4's "live since March" vs "live since April 2025" contradiction; capacity stated as 50 in
+  prose against 48 in output (unified at 48/day, monthly k = 48 x span); the `km.fit` "no y
+  argument exists" comment; latency-ratio prose ("about ten times") vs captured 7.2x — the
+  ratio itself swings 7–11x across runs, so timing now uses 7 reps over 5,000 rows and all
+  prose states it as an order of magnitude.
+- 01.5's "709 ever marked churned before the cutoff" garble; "identical customers" across
+  different populations; the right-censored 730-day row (cutoff+730 = 2027-06-30 vs data end
+  2026-08-31) now labelled "censored@427d" with the degeneration explained; 90-day lift 0.91x
+  called "worse than random" on two hits (now "indistinguishable"); the 1-sigma "real but weak
+  edge" verdict (now the series-standard 2-sigma band: inside, not decidable); the dead
+  `mrr_usd` placeholder assignment; "value-weighting paid there" for 01.1 (it closed most of
+  the gap and still lost).
+- 01.6's "would have paged on the day the migration landed" (labels lag; no daily monitor was
+  evaluated) and its own "six weeks"; G7 named "calibration" while checking mean-rate match
+  (now glossed as a prior-shift tripwire); G5's marginal-band-vs-paired-delta construction now
+  named explicitly in prose and justified against the stricter paired band it also clears.
+- np.std ddof=0 as a sample-sd estimator in the 01.1/01.5/01.6 noise bands (n=5–8); all bands
+  now ddof=1 and every quoted band updated (01.1: 0.0016/$467/$135; 01.6: 0.0024).
+- 01.1/01.6 value-band prose quoted 1-sigma ($63) against a printed 2-sigma band; unified.
+- June-2025 window gap now noted in 01.1 (and why 01.3 gets to use it).
+
+**Structural items from round one, still deliberately open (need a decision, not a patch):**
+Stage C is analysis rather than production code in 01.4/01.5/01.6 with no collapse
+justification (01.5's Permanent Fix promises a label-spec artifact no cell builds); 01.4's
+Stage A hides its mechanism behind `lab.build_framings()`; interview answer shapes that give
+away their numbers (defeats retrieval practice); three notebooks open by positioning against
+textbooks; 01.5 re-runs `cost_curve` verbatim in its Production Scenario. 01.4's duplicated
+listing was resolved this round by moving the daily block into the scenario.

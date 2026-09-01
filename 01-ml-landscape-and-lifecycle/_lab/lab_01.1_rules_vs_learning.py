@@ -105,6 +105,8 @@ def build_dataset() -> tuple[pd.DataFrame, dict[str, int]]:
 
 
 def windows(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
+    # June 2025 is deliberately in NO window: it straddles the M3 glitch week and the
+    # 2025-07-01 migration, so it belongs to neither regime. 01.3 uses it as a holdout.
     iss = df["issue_date"]
     return {
         "train":       df.loc[iss < "2025-01-01"],
@@ -155,8 +157,9 @@ def make_model() -> Pipeline:
 def make_boosted() -> Pipeline:
     """Strength check only - boosting is taught canonically in series 20.
 
-    If a gradient-boosted model with native categorical handling also fails to pull
-    away from the rule, the ceiling belongs to the PROBLEM, not to the model class.
+    If a gradient-boosted model (one-hot encoded, cardinality capped at 20) also fails
+    to pull away from the rule, the ceiling belongs to the PROBLEM, not to the model
+    class. (Native categorical support exists via `categorical_features`; series 20.)
     """
     from sklearn.ensemble import HistGradientBoostingClassifier
 
@@ -260,16 +263,16 @@ def main() -> None:
         vals.append(value_captured(stable, flag))
     rule_p = precision_recall_at_k(y, rule_flag)["precision"]
     rule_v = value_captured(stable, rule_flag)
-    print(f"  model precision@k = {np.mean(precs):.4f} +/- {np.std(precs):.4f}  "
+    print(f"  model precision@k = {np.mean(precs):.4f} +/- {np.std(precs, ddof=1):.4f}  "
           f"| rule = {rule_p:.4f} (deterministic)")
-    print(f"  model value       = ${np.mean(vals):,.0f} +/- ${np.std(vals):,.0f}  "
+    print(f"  model value       = ${np.mean(vals):,.0f} +/- ${np.std(vals, ddof=1):,.0f}  "
           f"| rule = ${rule_v:,.0f}")
     print(f"  precision delta {np.mean(precs) - rule_p:+.4f} vs noise band "
-          f"{2 * np.std(precs):.4f}  -> "
-          f"{'SIGNAL' if abs(np.mean(precs) - rule_p) > 2 * np.std(precs) else 'NOISE'}")
+          f"{2 * np.std(precs, ddof=1):.4f}  -> "
+          f"{'SIGNAL' if abs(np.mean(precs) - rule_p) > 2 * np.std(precs, ddof=1) else 'NOISE'}")
     print(f"  value delta     ${np.mean(vals) - rule_v:+,.0f} vs noise band "
-          f"${2 * np.std(vals):,.0f}  -> "
-          f"{'SIGNAL' if abs(np.mean(vals) - rule_v) > 2 * np.std(vals) else 'NOISE'}")
+          f"${2 * np.std(vals, ddof=1):,.0f}  -> "
+          f"{'SIGNAL' if abs(np.mean(vals) - rule_v) > 2 * np.std(vals, ddof=1) else 'NOISE'}")
 
     print("\n" + "=" * 78)
     print("L5  THE INCIDENT - production runs a FIXED THRESHOLD, not a fixed k")
@@ -333,9 +336,9 @@ def main() -> None:
         boot = w["train"].sample(frac=1.0, replace=True, random_state=s)
         sc = fit_score(boot, stable, seed=s, weight_by_value=True)
         wv.append(value_captured(stable, topk_flag(sc, k)))
-    print(f"  value-weighted model value = ${np.mean(wv):,.0f} +/- ${np.std(wv):,.0f}  "
+    print(f"  value-weighted model value = ${np.mean(wv):,.0f} +/- ${np.std(wv, ddof=1):,.0f}  "
           f"| rule ${rv:,.0f}  -> delta ${np.mean(wv) - rv:+,.0f} "
-          f"({'SIGNAL' if abs(np.mean(wv) - rv) > 2 * np.std(wv) else 'NOISE'})")
+          f"({'SIGNAL' if abs(np.mean(wv) - rv) > 2 * np.std(wv, ddof=1) else 'NOISE'})")
 
 
 if __name__ == "__main__":

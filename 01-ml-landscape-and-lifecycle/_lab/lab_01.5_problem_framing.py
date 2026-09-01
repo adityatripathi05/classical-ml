@@ -110,9 +110,6 @@ def features_as_of(cus: pd.DataFrame, inv: pd.DataFrame, tck: pd.DataFrame,
     f["tickets_90d"] = f["customer_id"].map(tck90.groupby("customer_id").size()).fillna(0)
     f["mean_csat_180d"] = f["customer_id"].map(
         csat180.groupby("customer_id")["csat"].mean())
-    f["mrr_usd"] = f["customer_id"].map(
-        win90.groupby("customer_id")["customer_id"].size()).fillna(0) * 0 + \
-        f["seats"].mul(0)  # placeholder replaced below
     plans = {"Starter": 49, "Growth": 199, "Scale": 599, "Enterprise": 2499}
     f["mrr_usd"] = f["plan"].map(plans) * (1 + 0.08 * (f["seats"] - 1))
     return f
@@ -245,12 +242,15 @@ def incident(f: pd.DataFrame, horizon: int = 180) -> None:
             p = lab11.precision_recall_at_k(yy, lab11.topk_flag(sc, kk))["precision"]
             lifts[tag].append(p / max(yy.mean(), 1e-9))
     a, b = np.array(lifts["A"]), np.array(lifts["B"])
-    print(f"\n  over 8 resplits: A lift {a.mean():.2f}x +/- {a.std():.2f}   "
-          f"B lift {b.mean():.2f}x +/- {b.std():.2f}")
+    print(f"\n  over 8 resplits: A lift {a.mean():.2f}x +/- {a.std(ddof=1):.2f}   "
+          f"B lift {b.mean():.2f}x +/- {b.std(ddof=1):.2f}")
     ratio = int(train_naive["ever_churned"].sum()) / max(int(train_op["churns_in_horizon"].sum()), 1)
-    verdict = ("a real but weak edge" if abs((a - b).mean()) > (a - b).std()
-               else "not a reliable difference")
-    print(f"  A minus B = {(a - b).mean():+.2f}x +/- {(a - b).std():.2f} -> {verdict}; the "
+    d_ab = a - b
+    band = 2 * d_ab.std(ddof=1)      # the same 2-sigma bar every verdict in this series uses
+    verdict = ("clears the 2-sigma band" if abs(d_ab.mean()) > band
+               else "inside the 2-sigma band - not a decidable edge")
+    print(f"  A minus B = {d_ab.mean():+.2f}x +/- {d_ab.std(ddof=1):.2f} "
+          f"(2-sigma band {band:.2f}) -> {verdict}; the "
           f"denser label has {ratio:.1f}x the positives to learn from")
     print(f"\n  BUT the two labels disagree about how big the problem is:")
     print(f"    'is a churner' base rate      {naive['ever_churned'].mean():.4f}")
@@ -264,8 +264,10 @@ def incident(f: pd.DataFrame, horizon: int = 180) -> None:
 # ---------------------------------------------------- L4: horizon vs actionability
 
 def horizon_tradeoff(f: pd.DataFrame) -> None:
-    print(f"  {'horizon':<10}{'base rate':>12}{'precision@k':>14}{'lift':>8}"
+    print(f"  {'horizon':<24}{'base rate':>12}{'precision@k':>14}{'lift':>8}"
           f"{'median days to churn':>24}")
+    data_end = pd.Timestamp("2026-08-31")
+    observable = (data_end - CUTOFF).days      # 427: the longest horizon the data can see
     for h in (30, 90, 180, 365, 730):
         d = label_frame(f, CUTOFF, h, active_only=True)
         rng = np.random.default_rng(SEED)
@@ -273,7 +275,7 @@ def horizon_tradeoff(f: pd.DataFrame) -> None:
         split = int(len(d) * 0.6)
         train, test = d.iloc[idx[:split]], d.iloc[idx[split:]]
         if train["churns_in_horizon"].sum() < 10:
-            print(f"  {f'{h}d':<10}{d['churns_in_horizon'].mean():>12.4f}"
+            print(f"  {f'{h}d':<24}{d['churns_in_horizon'].mean():>12.4f}"
                   f"{'too few positives to fit':>38}")
             continue
         scores = fit_predict(train, "churns_in_horizon", test)
@@ -281,9 +283,13 @@ def horizon_tradeoff(f: pd.DataFrame) -> None:
         k = max(1, int(round(0.10 * len(test))))
         m = lab11.precision_recall_at_k(y, lab11.topk_flag(scores, k))
         med = (d.loc[d["churns_in_horizon"] == 1, "churn_date"] - CUTOFF).dt.days.median()
-        print(f"  {f'{h}d':<10}{d['churns_in_horizon'].mean():>12.4f}"
+        label = f"{h}d" if h <= observable else f"{h}d (censored@{observable}d)"
+        print(f"  {label:<24}{d['churns_in_horizon'].mean():>12.4f}"
               f"{m['precision']:>14.4f}{m['precision'] / max(y.mean(), 1e-9):>8.2f}x"
               f"{med:>24.0f}")
+    print(f"\n  the data ends {observable} days after the cutoff, so any horizon past that")
+    print(f"  is right-censored: the '730d' row is really the label 'churns before the")
+    print(f"  data ends' - 01.4's censoring lesson arriving inside label design")
     print("\n  longer horizons are easier to predict and less actionable: the retention")
     print("  team cannot act today on a churn that happens some time in the next two years")
 
@@ -409,7 +415,7 @@ def cost_curve(f: pd.DataFrame, horizon: int = 180) -> None:
                   f"{tag:<26} net ${saved - cost:>10,.0f}")
     print("  when the ACTION COST scales with MRR, weighting the ranking by MRR buys nothing")
     print("  - it raises cost as fast as value. In 01.1 the action cost was flat per invoice,")
-    print("  which is exactly why value-weighting paid there and does not pay here.")
+    print("  which is why value-weighting closed most of the gap there and does not pay here.")
 
 
 # ------------------------------------------------- L6: implicit vs explicit labels

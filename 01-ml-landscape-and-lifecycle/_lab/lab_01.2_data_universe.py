@@ -87,9 +87,13 @@ def join_experiments(inv: pd.DataFrame, pay: pd.DataFrame, tck: pd.DataFrame,
           f"{len(naive):,} rows   (net change {net:+,}, {net / len(inv):+.2%})")
     print(f"    but that small net hides two large opposite effects:")
     print(f"      - {removed:,} invoice rows DROPPED (no payment row to match)")
-    print(f"      - {added:,} extra rows ADDED by fan-out "
-          f"({int((pay.groupby('invoice_id').size() > 1).sum()):,} invoices have >1 "
-          f"payment, SPEC M13)")
+    n_multi = int((pay.groupby("invoice_id").size() > 1).sum())
+    dup_fan = int(inv.loc[inv["invoice_id"].duplicated(), "invoice_id"]
+                  .map(pay.groupby("invoice_id").size()).fillna(0).ge(2).sum())
+    print(f"      - {added:,} extra rows ADDED by fan-out ({n_multi:,} invoices have >1 "
+          f"payment, SPEC M13;")
+    print(f"        the other {added - n_multi} extra rows are M1-duplicated invoice ROWS "
+          f"whose id also splits - {dup_fan} of the 896 duplicates fan out too)")
     print(f"      - check: {added:,} added - {removed:,} removed = {added - removed:+,} "
           f"= the net  ({'closes' if added - removed == net else 'DOES NOT CLOSE'})")
     print(f"      - rows that MOVED in one direction or the other: {added + removed:,}")
@@ -206,8 +210,10 @@ def reconcile(inv: pd.DataFrame, pay: pd.DataFrame) -> None:
     print(f"  billed on those same invoices (median-rate table):          "
           f"${billed_paid_usd:>14,.0f}")
     gap = collected_usd - billed_paid_usd
-    print(f"  gap: ${gap:,.0f} ({gap / billed_paid_usd:+.2%}) - FX moved between issue and "
-          f"settlement; a reconciliation this tight is the signal the conversion is right")
+    print(f"  gap: ${gap:,.0f} ({gap / billed_paid_usd:+.2%}) - settlement rates disperse "
+          f"about their per-currency median as FX moves over time;")
+    print(f"  a residual this small, with that mechanism, says no unconverted currency "
+          f"reached the sum")
 
 
 def main() -> None:

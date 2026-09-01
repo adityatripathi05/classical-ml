@@ -18,7 +18,8 @@
 ## Questions
 
 **Q1.** PayFlow's collections dashboard shows the late-payment model's precision rising from
-0.472 to 0.570 over six weeks, while overdue balance climbs and the CFO escalates. Explain how
+0.472 to 0.570 over the two weeks after a payment-gateway migration, while overdue balance
+climbs and the CFO escalates. Explain how
 both facts can be true simultaneously, and name the one metric that would have made the failure
 visible on day one. *(01.1 — debug this)*
 
@@ -41,8 +42,8 @@ the scoring decision is actually made. *(01.1)*
 Include what runs in production on day one, what runs in shadow, and the specific condition
 that would flip the decision later. *(01.1 — design this)*
 
-**Q7.** The bootstrap gave a precision noise band of 0.0015 and a value noise band of $437; the
-value-weighted model's deficit against the rule was $228 with a band of $126. The checker calls
+**Q7.** The bootstrap gave a precision noise band of 0.0016 and a value noise band of $467; the
+value-weighted model's deficit against the rule was $228 with a band of $135. The checker calls
 that SIGNAL. Should you act on it? Justify. *(01.1)*
 
 **Q8.** Mini coding challenge. From memory, write `precision_recall_at_k(y, flag)` returning
@@ -114,9 +115,9 @@ close the gap. *(01.3)*
 rebuilds a manifest and returns the list of fields that moved. Then explain why the manifest
 must keep inputs and outputs in separate blocks. *(01.3)*
 
-**Q25.** A daily work queue built by thresholding a probability delivers between 4 and 23 items
-a day to a team staffed for 48 — never once filling the roster, with a 5.8x swing between the
-busiest and quietest day — while the model dashboard stays green and no deploy has happened.
+**Q25.** A daily work queue built by thresholding a probability delivers between 28 and 53 items
+a day to a team staffed for 48 — starving the roster most days, flooding it on others, and
+matching it on none — while the model dashboard stays green and no deploy has happened.
 Name the failure, and give the one-line change that fixes it today. *(01.4 — debug this)*
 
 **Q26.** Derive why a fixed probability threshold cannot guarantee a fixed queue size, and state
@@ -181,9 +182,11 @@ single artifact would make the bias checkable? *(01.6)*
 precision (0.2949) ended up *worse* than the clean model's, rather than merely no better.
 *(01.6)*
 
-**Q44.** Random splitting on time-ordered data cost 0.5232 at zero contamination against 0.5569 at full dose — essentially
-nothing. When does the textbook warning actually bite, and how would you measure it for your own
-problem without confounding the comparison? *(01.6)*
+**Q44.** Random splitting on time-ordered data measured 0.5232 with an honest split against
+0.5569 at full contamination — a gap larger than the series' headline model-over-rule gain —
+after a diluted version of the same experiment had made it look like nothing. When does the
+textbook warning actually bite, and how would you measure it for your own problem without
+confounding the comparison? *(01.6)*
 
 **Q45.** A team hands you a model with a fully green gate suite and asks whether to ship. Name the
 checks the suite structurally cannot perform, and what you would require before approving.
@@ -212,7 +215,7 @@ mean predicted rate versus observed rate, whose gap went from −0.004 to +0.125
 
 **A2.** The random baseline at the same k (0.265, i.e. the base rate); confirmation both were
 measured at the same operating point; a variance estimate from repeated refits (±0.0008, band
-0.0015); the business objective alongside the proxy — where the rule actually wins, $51,362
+0.0016); the business objective alongside the proxy — where the rule actually wins, $51,362
 against $49,665; a temporal rather than random split; and the operating cost of owning the model.
 *(01.1)*
 
@@ -263,8 +266,9 @@ requires comparing predictions against realized outcomes: calibration and recall
 ground truth. *(01.1)*
 
 **A10.** Because two large opposite effects cancelled: 12,564 invoice rows were dropped for
-having no payment and 10,961 rows were added by fan-out over the 10,921 invoices paid in two
-instalments — 23,525 rows moved to produce a net of −1,603. The real check is key cardinality:
+having no payment and 10,961 rows were added by fan-out — 10,921 invoices paid in two
+instalments, plus 40 M1-duplicated invoice rows whose ids also split — 23,525 rows moved to
+produce a net of −1,603. The real check is key cardinality:
 `validate="m:1"` on the merge, which raises when the right-hand key is not unique, or
 aggregating the many-side to the join grain first. *(01.2)*
 
@@ -280,9 +284,10 @@ the largest per unit, contributing 97.7% of the raw total against 38.0% of the r
 objected because every value was present, well-typed as text, and individually valid — unit
 correctness is a semantic property that no null check or schema validator represents. *(01.2)*
 
-**A13.** It returns a `str`: the 288,936 values concatenated into a 1,366,049-character string,
-because the comma-formatted legacy rows make the column `StringDtype` and `+` on strings is
-concatenation. The preventing assertion is an explicit dtype check after read — assert the column
+**A13.** It returns a `str`: the values concatenated — a 200,000-row probe of the column comes
+back as a 1,366,049-character string, and the full column concatenates the same way, only
+longer — because the comma-formatted legacy rows make the column `StringDtype` and `+` on
+strings is concatenation. The preventing assertion is an explicit dtype check after read — assert the column
 is numeric (or pass an explicit `dtype`/converter) rather than inferring type from the column's
 name. *(01.2)*
 
@@ -305,8 +310,10 @@ currencies match, with an explicit `to_usd(rate)` conversion — Decimal rather 
 money is compared for exact equality. *(01.2)*
 
 **A17.** Size alone is not the standard; a *mechanism* is. The +0.55% residual is acceptable
-because exchange rates demonstrably move between issue and settlement, which predicts a small
-signed gap of roughly that magnitude. A 0.1% gap with no explanation is worse, because an
+because settlement-time rates demonstrably disperse around the median-rate table as FX moves
+between issue and settlement, which predicts a small signed gap of roughly that magnitude —
+though note what the check can and cannot validate: both sides draw on the same rate column,
+so it proves the aggregation (join, dedup, no unconverted currency), not the rate source. A 0.1% gap with no explanation is worse, because an
 unexplained residual means an unknown process is acting on the number and nothing bounds how
 large it becomes next month. *(01.2)*
 
@@ -364,14 +371,16 @@ so that a changed result can be attributed to the specific input that moved. *(0
 probability, so its size is the mass of the score distribution above the cutoff and moves with
 that distribution and with each day's invoice mix, while the business constraint is a fixed
 headcount. Today's fix is to replace `scores >= t` with top-*k* selection at the team's capacity
-— one line, no retraining. ⚠️ Be careful what you claim for it: precision *falls* (0.5718 to 0.4385) because the queue is larger, and the win is that the queue is filled at all — 617 late invoices caught against 215, roughly double, using capacity already being paid for. *(01.4)*
+— one line, no retraining. ⚠️ Be careful what you claim for it: precision *falls* (0.5718 to 0.4390) because the queue is
+larger, and the win is that the queue is filled at all — 590 late invoices caught against 215,
+nearly triple, using capacity already being paid for. *(01.4)*
 
 **A26.** Queue size under a threshold is the count of scores at or above *t*, which equals *n*
 times the survival function of the score distribution at *t*; both *n* and that distribution move
 with customer mix, seasonality and drift, so the size is an output. Capacity selection fixes the
 count and takes the threshold as the *k*-th order statistic of the scores, letting it float. The
-two are duals and only the second matches a headcount — which is why no threshold value delivered
-300 slots, the queue going from 818 at 0.4 to 241 at 0.6. *(01.4)*
+two are duals and only the second matches a headcount — which is why a fixed t=0.5 delivered
+queues from 28 to 53 across twenty days against a 48-slot roster, matching it on none. *(01.4)*
 
 **A27.** That aggregate quality and operational agreement are different things. The precision gap
 sits inside the noise band established in 01.3, so on that evidence the framings are
@@ -394,8 +403,8 @@ where waiting for outcomes is not an option, at the cost of having nothing to be
 *(01.4)*
 
 **A30.** Artifact size and how it grows with the dataset (5,003.5 KB against 3.8 KB on only 20,000
-rows here); per-row prediction latency against the serving budget (roughly ten times the
-parametric model); memory in the serving tier; retrain and redeploy cost, since every retrain
+rows here); per-row prediction latency against the serving budget (an order of magnitude
+more than the parametric model); memory in the serving tier; retrain and redeploy cost, since every retrain
 ships the data again; and whether shipping training rows into production crosses a privacy or
 trust boundary, because the artifact contains customer records. *(01.4)*
 
@@ -432,8 +441,8 @@ decision time, because in production nothing after the cutoff exists yet. Violat
 direction is leakage; the label direction is the premise of supervised learning. *(01.5)*
 
 **A36.** Use it for ranking, since scarce positives are a real constraint and the denser label
-ranked slightly better here, by about one standard deviation across resplits — weak evidence, but
-free). Recalibrate
+ranked slightly better here — though the edge sits inside the two-sigma resplit band, so it is
+weak evidence, merely free. Recalibrate
 its scores to the operational base rate before feeding any expected-value computation. Never let
 its base rate reach a business case: inflated 5.6x, it sizes a prize that does not exist. *(01.5)*
 
@@ -478,20 +487,28 @@ scoring-population definition — once "who is eligible to be scored" is recorde
 assert that the training population matches it, which is impossible while the population is
 defined only implicitly by a join. *(01.6)*
 
-**A43.** The model allocates weight to the leaked column in proportion to how predictive it looks
-during training, and correspondingly less to the honest features. At serving time the column is
-constant at zero, so the model is left relying on an under-weighted remainder — strictly worse
-than the clean model, which had spent all its capacity on features that still exist. Leakage does
-not merely fail to transfer; it displaces signal that would have. *(01.6)*
+**A43.** Rule out the intuitive story first: at serving time the leaked column is 0 on every
+freshly issued invoice, so it adds an identical constant to every logit — a pure intercept
+shift — and precision@k ranks by the linear predictor, which is invariant to that. "The honest
+features got under-weighted" would therefore cost exactly nothing and cannot be the mechanism.
+What actually breaks: fitted beside a column that already encodes the outcome, the honest
+coefficients become effects *conditional on* that column — their relative sizes change and
+`terms_days` flips sign (+0.1517 → −0.5116) — so production receives a *different* ranking,
+slightly anti-correlated with the clean one (Spearman −0.18), not a weaker version of the same
+one. That is why it lands below the clean model rather than merely level with it. *(01.6)*
 
-**A44.** It bites when the relationship between features and outcome changes over time, not when
-only the base rate moves. Here the gateway migration shifted the late rate without changing the
-feature-outcome mapping *uniformly* — it moved for the non-Indian subpopulation that `country`
-already identifies, and roughly uniformly within it, so the ordering survived even though the
-level did not. Training on contemporaneous rows therefore helped calibration and barely helped
-ranking. Measure it by holding the test rows fixed and varying only whether training saw
-contemporaneous data — comparing two different test sets confounds the effect with a base-rate
-difference and can even show the wrong sign. *(01.6)*
+**A44.** It bites when the feature-outcome relationship changes over time, not when only the
+overall base rate moves — and "changes" includes a level shift confined to a subpopulation.
+Here the migration moved `P(late|x)` for the non-Indian rows `country` already identifies:
+roughly uniform *within* the group, so within-group ordering survived, but a group-specific
+shift reorders the groups *against each other*, and a model that never saw the new regime
+under-ranks the whole migrated subpopulation. That cross-group term is what the measured
++0.0337 buys (0.5232 honest against 0.5569 at full dose, on identical test rows) — the same
+effect as 01.1's regime refit. Measure it by holding the test rows fixed and varying only
+whether training saw contemporaneous data, and *control the contamination share*: pooling and
+sampling diluted the treatment to ~23% and made it look negligible, while comparing two
+different test sets confounds the effect with a base-rate difference and can even show the
+wrong sign. *(01.6)*
 
 **A45.** The suite cannot check intent. Require: the label spec, with its horizon justified
 against the operational trigger it feeds; the scoring-population definition, compared against

@@ -32,7 +32,6 @@ from sklearn.model_selection import train_test_split
 HERE = Path(__file__).resolve().parent
 SEED = 42
 TRAIN_N = 60_000          # subsample for runtime; see the scale note above
-CAPACITY_FRAC = 0.26      # the dunning queue the collections team can work
 NOISE_REPEATS = 5
 LEAKY = "reminder_count"  # SPEC M10: written AFTER the payment resolves
 
@@ -134,7 +133,7 @@ def build_run(df_dedup: pd.DataFrame, df_raw: pd.DataFrame, defects: set[str]) -
             sc = fit(boot, test, seed=s)
             reps.append(lab11.precision_recall_at_k(
                 y, lab11.topk_flag(sc, capacity))["precision"])
-        run.noise_band = 2 * float(np.std(reps))
+        run.noise_band = 2 * float(np.std(reps, ddof=1))
 
     if "leakage" in defects:                  # what serving time actually looks like
         prod_test = test.copy()
