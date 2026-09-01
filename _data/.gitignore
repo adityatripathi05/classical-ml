@@ -1,0 +1,4 @@
+# Generated data is never committed — regenerate deterministically:
+#   .venv\Scripts\python _data\generate.py
+raw/
+processed/

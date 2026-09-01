@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Tool caches (folder 15 runs pytest in temp dirs, but belt and braces)
+.pytest_cache/
+.mypy_cache/
+.hypothesis/
+.coverage
+htmlcov/
+
+# OS / editor
+Thumbs.db
+.DS_Store
+.vscode/
+.idea/
+
+# Bundled binaries and large artefacts (keep these out of future commits)
+*.exe
+*.whl
+*.msi
+
+# Maintenance scripts for the modernisation work (not curriculum content)
+.tools/
