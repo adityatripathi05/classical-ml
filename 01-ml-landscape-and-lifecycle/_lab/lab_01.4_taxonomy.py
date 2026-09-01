@@ -28,7 +28,10 @@ import pandas as pd
 
 HERE = Path(__file__).resolve().parent
 SEED = 42
-CAPACITY = 300          # dunning slots the collections team can work per day
+# PayFlow's collections capacity, stated ONCE for the whole series in daily terms:
+# 01.1's queue of 7,195 invoices spans the 5-month stable window (~151 days), i.e. ~48/day.
+CAPACITY_PER_DAY = 48
+MONTH_DAYS = 22         # working days, for converting a monthly window to a daily rate
 THRESHOLD = 0.5         # the default nobody chose but everybody ships
 
 
@@ -109,22 +112,76 @@ def framing_disagreement(test: pd.DataFrame, preds: dict, k: int) -> None:
 # ------------------------------------------------------ L3: the framing incident
 
 def threshold_vs_capacity(test: pd.DataFrame, scores: np.ndarray) -> None:
-    """Classification answers 'is it likely?'. The business asked 'which 300?'."""
-    above = int((scores >= THRESHOLD).sum())
-    print(f"  evaluation window: {len(test):,} invoices, actual late rate "
-          f"{test['late'].mean():.3f}")
-    print(f"  model mean predicted P(late): {scores.mean():.3f}, "
-          f"max {scores.max():.3f}")
-    print(f"  invoices scoring >= {THRESHOLD}: {above:,}  "
-          f"-> a queue of {above:,} against a capacity of {CAPACITY}/day")
+    """Classification answers 'is it likely?'. The business asked 'which k today?'.
+
+    Reports precision at every operating point, because comparing a threshold's queue
+    against a top-k queue of a DIFFERENT size would be the matched-operating-point error
+    01.1 forbids - and it is the reason top-k's apparent precision edge is not a win.
+    """
+    y = test["late"].to_numpy()
+    print(f"  evaluation window: {len(test):,} invoices (~{len(test)/MONTH_DAYS:.0f} per "
+          f"day over {MONTH_DAYS} working days), actual late rate {test['late'].mean():.3f}")
+    print(f"  model mean predicted P(late): {scores.mean():.3f}, max {scores.max():.3f}\n")
+    print(f"  {'operating point':<26}{'queue':>8}{'per day':>10}{'precision':>12}")
     for t in (0.3, 0.4, 0.5, 0.6):
-        n = int((scores >= t).sum())
-        print(f"    threshold {t:.1f} -> queue of {n:>6,}  "
-              f"({'starves' if n < CAPACITY else 'floods'} a {CAPACITY}-slot team)")
-    top = lab11.topk_flag(scores, CAPACITY)
-    m = lab11.precision_recall_at_k(test["late"].to_numpy(), top)
-    print(f"  top-{CAPACITY} selection instead: queue={int(top.sum()):,} exactly, "
-          f"precision={m['precision']:.4f} - the size is a guarantee, not an outcome")
+        flag = scores >= t
+        m = lab11.precision_recall_at_k(y, flag)
+        print(f"  {f'threshold {t:.1f}':<26}{m['k']:>8,}{m['k']/MONTH_DAYS:>10.0f}"
+              f"{m['precision']:>12.4f}")
+    k_month = CAPACITY_PER_DAY * MONTH_DAYS
+    top = lab11.topk_flag(scores, k_month)
+    m = lab11.precision_recall_at_k(y, top)
+    implied = float(np.sort(scores)[-k_month])
+    print(f"  {f'top-{k_month:,} (capacity)':<26}{k_month:>8,}"
+          f"{CAPACITY_PER_DAY:>10}{m['precision']:>12.4f}")
+    print(f"\n  top-k is itself a threshold rule - here the implied cutoff is "
+          f"{implied:.4f}. At a MATCHED")
+    print( "  queue size the two selectors return the identical set, so capacity selection")
+    print( "  buys size CONTROL, not precision. The precision column moves only because the")
+    print( "  operating point moves.")
+    thr_flag = scores >= THRESHOLD
+    thr_caught = int((thr_flag & (y == 1)).sum())
+    top_caught = int((top & (y == 1)).sum())
+    print(f"\n  what the business actually gets, at the SAME staffing cost:")
+    print(f"    threshold {THRESHOLD}: works {int(thr_flag.sum()):,} invoices, catches "
+          f"{thr_caught:,} late ones (recall "
+          f"{lab11.precision_recall_at_k(y, thr_flag)['recall']:.3f})")
+    print(f"    top-{k_month:,}     : works {k_month:,} invoices, catches {top_caught:,} "
+          f"late ones (recall {m['recall']:.3f})")
+    print(f"    -> {top_caught/max(thr_caught,1):.1f}x the late invoices caught, using "
+          f"capacity that was already being paid for")
+
+
+def daily_queue_swing(df: pd.DataFrame, train: pd.DataFrame, n_days: int = 20) -> None:
+    """The actual incident: a FIXED threshold on a MOVING daily score distribution.
+
+    The threshold sweep above varies t on one pooled window; that is not what production
+    does. Production holds t fixed and meets a different day's invoices every morning.
+    """
+    window = df.loc[(df["issue_date"] >= "2025-07-01") & (df["issue_date"] < "2026-05-31")]
+    days = sorted(window["issue_date"].unique())[:n_days]
+    rows = []
+    for day in days:
+        d = window.loc[window["issue_date"] == day]
+        if len(d) < 30:
+            continue
+        sc = lab11.fit_score(train, d, seed=SEED)
+        rows.append({"day": pd.Timestamp(day).date(), "invoices": len(d),
+                     "queued": int((sc >= THRESHOLD).sum()),
+                     "late_rate": float(d["late"].mean())})
+    out = pd.DataFrame(rows)
+    print(f"  a FIXED threshold of {THRESHOLD} applied to {len(out)} consecutive days, "
+          f"capacity {CAPACITY_PER_DAY}/day:")
+    print(out.head(8).to_string(index=False))
+    q = out["queued"]
+    print(f"\n  queue size across days: min {q.min()}  median {q.median():.0f}  "
+          f"max {q.max()}  (capacity {CAPACITY_PER_DAY})")
+    print(f"  days that STARVE the team (queue < {CAPACITY_PER_DAY}): "
+          f"{int((q < CAPACITY_PER_DAY).sum())} of {len(q)}")
+    print(f"  days that FLOOD it (queue > {CAPACITY_PER_DAY}): "
+          f"{int((q > CAPACITY_PER_DAY).sum())} of {len(q)}")
+    print(f"  ratio of the busiest day to the quietest: {q.max()/max(q.min(),1):.1f}x")
+    print( "  the model never changed; only which invoices arrived that morning did")
 
 
 # -------------------------------------------------- L4: the API is the taxonomy
@@ -263,6 +320,8 @@ def main() -> None:
     print("L3  THE INCIDENT - a fixed threshold against a capacity-shaped problem")
     print("=" * 78)
     threshold_vs_capacity(test, preds["classification"])
+    print()
+    daily_queue_swing(df, train)
 
     print("\n" + "=" * 78)
     print("L4  THE ESTIMATOR API IS THE TAXONOMY")

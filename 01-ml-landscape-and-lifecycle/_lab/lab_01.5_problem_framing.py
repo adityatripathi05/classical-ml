@@ -186,9 +186,19 @@ def incident(f: pd.DataFrame, horizon: int = 180) -> None:
     train_op = operational.loc[operational["customer_id"].isin(tr_ids)]
     test_op = operational.loc[~operational["customer_id"].isin(tr_ids)]
 
+    # Arm A must be drawn from the population the naive framing ACTUALLY uses - every
+    # customer ever signed up, including those who had already churned before the cutoff.
+    # Drawing its training rows from `operational` (active-at-cutoff) would silently
+    # exclude them and the "recognising the past" mechanism would never be exercised.
     naive = f.loc[f["signup_date"] <= CUTOFF].copy()
     naive["ever_churned"] = naive["churn_date"].notna().astype(int)
-    train_naive = naive.loc[naive["customer_id"].isin(tr_ids)]
+    test_ids = set(test_op["customer_id"])
+    train_naive = naive.loc[~naive["customer_id"].isin(test_ids)]
+    already_gone = int((train_naive["churn_date"] <= CUTOFF).sum())
+    print(f"  arm A training population: {len(train_naive):,} customers, of whom "
+          f"{already_gone:,} had ALREADY churned")
+    print(f"  arm B training population: {len(train_op):,} customers, all active at the "
+          f"cutoff by construction\n")
 
     y = test_op["churns_in_horizon"].to_numpy()
     k = max(1, int(round(0.10 * len(test_op))))       # retention team can contact ~10%
@@ -225,7 +235,9 @@ def incident(f: pd.DataFrame, horizon: int = 180) -> None:
         ids = operational.iloc[ix[:split]]["customer_id"]
         tr_op = operational.loc[operational["customer_id"].isin(ids)]
         te_op = operational.loc[~operational["customer_id"].isin(ids)]
-        tr_nv = naive.loc[naive["customer_id"].isin(ids)]
+        # same correction as above: arm A draws from the full signed-up population,
+        # excluding only the evaluation customers
+        tr_nv = naive.loc[~naive["customer_id"].isin(set(te_op["customer_id"]))]
         yy = te_op["churns_in_horizon"].to_numpy()
         kk = max(1, int(round(0.10 * len(te_op))))
         for tag, tr, tgt in [("A", tr_nv, "ever_churned"), ("B", tr_op, "churns_in_horizon")]:
@@ -235,8 +247,11 @@ def incident(f: pd.DataFrame, horizon: int = 180) -> None:
     a, b = np.array(lifts["A"]), np.array(lifts["B"])
     print(f"\n  over 8 resplits: A lift {a.mean():.2f}x +/- {a.std():.2f}   "
           f"B lift {b.mean():.2f}x +/- {b.std():.2f}")
-    print(f"  A minus B = {(a - b).mean():+.2f}x +/- {(a - b).std():.2f} -> the denser "
-          f"label really does rank better; it has {int(train_naive['ever_churned'].sum()) // max(int(train_op['churns_in_horizon'].sum()), 1)}x the positives to learn from")
+    ratio = int(train_naive["ever_churned"].sum()) / max(int(train_op["churns_in_horizon"].sum()), 1)
+    verdict = ("a real but weak edge" if abs((a - b).mean()) > (a - b).std()
+               else "not a reliable difference")
+    print(f"  A minus B = {(a - b).mean():+.2f}x +/- {(a - b).std():.2f} -> {verdict}; the "
+          f"denser label has {ratio:.1f}x the positives to learn from")
     print(f"\n  BUT the two labels disagree about how big the problem is:")
     print(f"    'is a churner' base rate      {naive['ever_churned'].mean():.4f}")
     print(f"    'churns within {horizon}d' base rate {operational['churns_in_horizon'].mean():.4f}"
@@ -321,7 +336,41 @@ def cost_curve(f: pd.DataFrame, horizon: int = 180) -> None:
               f"net at k={k:,}: ${net:,.0f}")
 
     # Lever 2: rank by expected VALUE, not by probability (01.1's weighting, again).
+    # What the correct objective actually is. Expected net of contacting customer i is
+    #   E_i = m_i*s*V*p_i - c_i.  With a PROPORTIONAL offer c_i = offer*m_i, this is
+    #   E_i = m_i * s*V * (p_i - p*),  p* = offer/(s*V).
+    # MRR therefore cancels from the go/no-go TEST (contact iff p_i > p*) but NOT from the
+    # ranking, whose optimum is m_i*(p_i - p*). Below break-even every term is negative,
+    # so weighting by MRR alone concentrates the LOSS - which is what the rows below show.
     k = max(1, int(round(0.10 * len(test))))
+    print(f"\n  MRR cancels from the go/no-go TEST (contact iff P > p* = {breakeven:.4f}),")
+    print(f"  never from the RANKING, whose objective is MRR x (P(churn) - p*).")
+    print(f"\n  WARNING, and it is the important finding here: this classifier is fitted")
+    print(f"  with class_weight='balanced', so predict_proba is a re-weighted SCORE, not a")
+    print(f"  calibrated probability. mean predicted {scores.mean():.4f} against an actual")
+    print(f"  rate of {y.mean():.4f}, max {scores.max():.4f} - inflated by roughly "
+          f"{scores.mean()/max(y.mean(),1e-9):.0f}x.")
+    print(f"  Feeding it into an expected-value formula therefore produces optimism that")
+    print(f"  realisation does not honour:")
+    for tag, ranking in [("P(churn)", scores),
+                         ("P(churn) x MRR", scores * mrr),
+                         ("MRR x (P(churn) - p*)", mrr * (scores - breakeven))]:
+        flag = lab11.topk_flag(ranking, k)
+        exp_net = float((mrr[flag] * SAVE_RATE * VALUE_MONTHS
+                         * (scores[flag] - breakeven)).sum())
+        net = (SAVE_RATE * VALUE_MONTHS * mrr[flag & (y == 1)].sum()
+               - OFFER_MONTHS * mrr[flag].sum())
+        print(f"    rank by {tag:<24} expected ${exp_net:>12,.0f}   realised ${net:>12,.0f}")
+    print( "    -> the algebra is right: MRR x (P - p*) does maximise EXPECTED value, above")
+    print( "       ranking by P alone. The objective is correct.")
+    print( "    -> naive P x MRR is the worst of the three by an order of magnitude, which")
+    print( "       is exactly what the cancellation argument gets wrong: MRR drops out of")
+    print( "       the THRESHOLD, not the ranking, and weighting by it alone buys expensive")
+    print( "       customers whose losses scale with their MRR.")
+    print( "    -> every realised figure is negative anyway, because the probabilities fed")
+    print( "       to the cost model are not probabilities. Calibrate before costing:")
+    print( "       a score can rank well and still destroy an expected-value calculation.")
+
     print("\n  does value-weighted targeting help, as it did for dunning in 01.1?")
     for cost_label, unit_cost, scales in [("proportional offer (0.25 months of MRR)", None, True),
                                           ("flat outreach cost ($40 per contact)", 40.0, False)]:

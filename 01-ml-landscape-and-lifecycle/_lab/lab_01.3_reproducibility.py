@@ -53,6 +53,17 @@ def load_sibling(filename: str, alias: str):
 lab11 = load_sibling("lab_01.1_rules_vs_learning.py", "lab_01_1")
 
 
+def later_eval_slice(df: pd.DataFrame) -> pd.DataFrame:
+    """Rows issued after both data snapshots, so the data-lottery arms are comparable.
+
+    June 2025 is the month 01.1's three windows deliberately skip - it straddles the M3
+    unit-glitch week and the 2025-07-01 gateway migration, so it belongs to neither the
+    stable nor the drift regime. That makes it exactly the right holdout here: unused by
+    any other experiment in the series, and after both snapshots.
+    """
+    return df.loc[(df["issue_date"] >= "2025-06-01") & (df["issue_date"] < "2025-07-01")]
+
+
 def score_hash(scores: np.ndarray) -> str:
     """Content address of a prediction vector: same inputs+code+seed => same digest."""
     return hashlib.sha256(np.round(scores, 10).tobytes()).hexdigest()[:12]
@@ -66,48 +77,81 @@ def frame_hash(df: pd.DataFrame) -> str:
 
 # ------------------------------------------------------------- L1: the split lottery
 
-def split_lottery(pool: pd.DataFrame, n_runs: int = 12) -> pd.Series:
-    """Same code, same data, different unseeded split. What does the number do?"""
-    out = {}
+def split_lottery(pool: pd.DataFrame, n_runs: int = 12) -> pd.DataFrame:
+    """Same code, same data, different unseeded split - scoring BOTH policies.
+
+    Scoring only the model measures a MARGINAL spread. The quantity a shipping decision
+    actually rests on is the PAIRED delta (model - rule on identical rows), because both
+    policies see the same evaluation sample and most of the split-to-split noise is
+    common-mode. Reporting the marginal spread against a paired claim compares two
+    different quantities, which is the mistake this function exists to avoid.
+    """
+    rows = []
     for s in range(n_runs):
         train, test = train_test_split(pool, test_size=EVAL_ROWS, random_state=s)
         scores = lab11.fit_score(train, test, seed=SEED)
         y = test["late"].to_numpy()
-        k = int(lab11.dunning_rule(test).sum())
-        out[s] = lab11.precision_recall_at_k(y, lab11.topk_flag(scores, k))["precision"]
-    return pd.Series(out, name="precision@k")
+        rule = lab11.dunning_rule(test)
+        k = int(rule.sum())
+        p_model = lab11.precision_recall_at_k(y, lab11.topk_flag(scores, k))["precision"]
+        p_rule = lab11.precision_recall_at_k(y, rule)["precision"]
+        rows.append({"model": p_model, "rule": p_rule, "delta": p_model - p_rule})
+    return pd.DataFrame(rows, index=pd.RangeIndex(n_runs, name="split_seed"))
 
 
-def training_vs_evaluation_noise(pool: pd.DataFrame, n_runs: int = 8) -> None:
-    """Two different quantities that both get called 'variance'.
+def training_vs_evaluation_noise(pool: pd.DataFrame, n_runs: int = 12) -> None:
+    """Two axes that both get called 'variance', crossed with marginal vs paired.
 
-    Training stability: hold the evaluation rows FIXED, resample the training set.
-    Evaluation stability: hold the training procedure fixed, vary which rows are scored.
-    01.1 measured the first and this notebook measures the second; they differ by an
-    order of magnitude, and only one of them bounds what a single run can report.
+    Rows:  what is resampled - the TRAINING set (eval rows held fixed), or the
+           EVALUATION rows (training procedure held fixed).
+    Cols:  what is measured - the model's precision ALONE (marginal), or the
+           model-minus-rule difference on identical rows (paired).
+
+    The 2x2 carries the whole lesson. When the evaluation rows are fixed, the rule is a
+    constant, so pairing changes nothing. When they are re-drawn, the rule moves WITH the
+    model and most of the noise cancels - which is why a comparison can be far better
+    determined than either of the numbers being compared.
     """
     train_fixed, test_fixed = train_test_split(pool, test_size=EVAL_ROWS, random_state=SEED)
     y = test_fixed["late"].to_numpy()
-    k = int(lab11.dunning_rule(test_fixed).sum())
+    rule_fixed = lab11.dunning_rule(test_fixed)
+    k = int(rule_fixed.sum())
+    p_rule_fixed = lab11.precision_recall_at_k(y, rule_fixed)["precision"]
+
     boot = []
     for s in range(n_runs):
         resampled = train_fixed.sample(frac=1.0, replace=True, random_state=s)
         scores = lab11.fit_score(resampled, test_fixed, seed=s)
-        boot.append(lab11.precision_recall_at_k(y, lab11.topk_flag(scores, k))["precision"])
-    boot = pd.Series(boot)
+        p = lab11.precision_recall_at_k(y, lab11.topk_flag(scores, k))["precision"]
+        boot.append({"model": p, "rule": p_rule_fixed, "delta": p - p_rule_fixed})
+    boot = pd.DataFrame(boot)
     lottery = split_lottery(pool, n_runs=n_runs)
-    print(f"  training stability   (fixed eval rows, resampled training set): "
-          f"std {boot.std():.4f}   spread {boot.max() - boot.min():.4f}")
-    print(f"  evaluation stability (fixed procedure, re-drawn eval rows):     "
-          f"std {lottery.std():.4f}   spread {lottery.max() - lottery.min():.4f}")
-    print(f"  ratio of spreads: {(lottery.max() - lottery.min()) / (boot.max() - boot.min()):.1f}x"
-          f"  -> the holdout draw dominates, and it is the one nobody was pinning")
+
+    header = f"  {'what is resampled':<34}{'marginal (model)':>20}{'paired (model-rule)':>22}"
+    print(header)
+    for label, frame in [("training set, eval rows FIXED", boot),
+                         ("evaluation rows, procedure fixed", lottery)]:
+        marginal = frame["model"].std()
+        paired = frame["delta"].std()
+        print(f"  {label:<34}{marginal:>20.4f}{paired:>22.4f}")
+    corr = lottery["model"].corr(lottery["rule"])
+    print(f"\n  correlation between model and rule across re-drawn holdouts: {corr:.3f}")
+    print(f"  -> the holdout draw dominates the ABSOLUTE number (std "
+          f"{lottery['model'].std():.4f}) but largely cancels in the COMPARISON (std "
+          f"{lottery['delta'].std():.4f}),")
+    print( "     because both policies are scored on the same rows. With the eval rows")
+    print( "     held fixed the rule is a constant, so pairing buys nothing there.")
 
 
 # -------------------------------------------------------------- L2: the data lottery
 
 def data_lottery(df: pd.DataFrame, eval_slice: pd.DataFrame) -> None:
-    """The same training script, run on two different days, is two different models."""
+    """The same training script, run on two different days, is two different models.
+
+    The evaluation slice must sit AFTER both snapshots, or the later arm is scored on rows
+    it trained on and the comparison is contaminated - which would be a strange thing to
+    ship in a notebook about experimental hygiene. See `later_eval_slice()`.
+    """
     snapshots = {"as-of 2025-01-01": "2025-01-01", "as-of 2025-06-01": "2025-06-01"}
     scores, manifests = {}, {}
     for label, cutoff in snapshots.items():
@@ -231,13 +275,30 @@ def main() -> None:
     print("=" * 78)
     runs = split_lottery(pool)
     print(runs.round(4).to_string())
-    spread = runs.max() - runs.min()
-    print(f"\n  mean {runs.mean():.4f}   std {runs.std():.4f}   "
-          f"min {runs.min():.4f}   max {runs.max():.4f}   spread {spread:.4f}")
-    print(f"  the improvement 01.1 reported was {CLAIMED_GAIN:+.4f}; the spread from split "
-          f"choice alone is {spread / CLAIMED_GAIN:.1f}x that size")
-    print(f"  -> a single unseeded run can report anything from {runs.min():.4f} to "
-          f"{runs.max():.4f} without a line of code changing")
+    m_spread = runs["model"].max() - runs["model"].min()
+    d_band = 2 * runs["delta"].std()
+    print(f"\n  model precision alone : mean {runs['model'].mean():.4f}  "
+          f"std {runs['model'].std():.4f}  min {runs['model'].min():.4f}  "
+          f"max {runs['model'].max():.4f}  spread {m_spread:.4f}")
+    print(f"  paired delta          : mean {runs['delta'].mean():.4f}  "
+          f"std {runs['delta'].std():.4f}  min {runs['delta'].min():.4f}  "
+          f"max {runs['delta'].max():.4f}  spread "
+          f"{runs['delta'].max() - runs['delta'].min():.4f}")
+    print(f"\n  -> a single unseeded run can report an ABSOLUTE precision anywhere from "
+          f"{runs['model'].min():.4f}")
+    print(f"     to {runs['model'].max():.4f} without a line of code changing. Reporting "
+          f"that number alone is a draw,")
+    print( "     not a measurement.")
+    print(f"\n  -> but the DECISION rests on the comparison, and the comparison is far "
+          f"better determined:")
+    print(f"     2-sigma band on the paired delta = {d_band:.4f}; the gain 01.1 reported "
+          f"was {CLAIMED_GAIN:+.4f}")
+    verdict = "CLEARS the band - 01.1's claim survives" if CLAIMED_GAIN > d_band \
+        else "sits inside the band - 01.1's claim is unsupported"
+    print(f"     {verdict}")
+    print( "\n  Comparing 01.1's PAIRED gain against the MARGINAL spread would be an error:")
+    print( "  they are different quantities, and pairing is what removes the common-mode")
+    print( "  noise that makes the marginal spread large.")
 
     print("\n" + "-" * 78)
     print("L1b TWO KINDS OF VARIANCE - which one did 01.1 actually measure?")
@@ -247,7 +308,10 @@ def main() -> None:
     print("\n" + "=" * 78)
     print("L2  THE DATA LOTTERY - same script, two different days")
     print("=" * 78)
-    eval_slice = w["test_stable"].head(EVAL_ROWS)
+    eval_slice = later_eval_slice(df)
+    print(f"  evaluation slice: invoices issued {eval_slice['issue_date'].min():%Y-%m-%d} "
+          f"to {eval_slice['issue_date'].max():%Y-%m-%d}, n={len(eval_slice):,}")
+    print(f"  (strictly after BOTH snapshots, so neither arm has seen these rows)\n")
     data_lottery(df, eval_slice)
 
     print("\n" + "=" * 78)

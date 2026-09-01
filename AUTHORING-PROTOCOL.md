@@ -92,12 +92,29 @@ different notebook unchanged, it is too generic — bind it to THIS notebook's m
 
 ## Phase 3 — Scaffold (never type template headings by hand)
 
+Two paths. Both end at the same guarantee: `check.py` verifies the headings, so neither
+depends on remembering the template.
+
+**Path A — incremental (a human, or filling a notebook over several sittings):**
+
 ```bash
 .venv\Scripts\python _tools/scaffold.py <id> "<Title>" --series "<NN Series Name>" --level <B|I|A> --prereqs "<id (topic) . id (topic)>" --out "<series-folder>"
 ```
 
-The scaffold's headings are exact by construction; `check.py` fails any leftover
+The scaffold's headings are exact by construction and `check.py` fails any leftover
 `<<FILL: ...>>`, so nothing can be silently skipped.
+
+**Path B — generated in one pass (what series 01 actually used):** write a throwaway
+builder script in the scratchpad that emits the complete `.ipynb` as JSON — markdown cells
+as `md("...")`, code cells as `code("...")` — then run it. This is the practical path when
+the whole notebook is authored in one response, because it makes the prose editable as
+plain text and the whole notebook regenerable after any correction. Two rules make it
+safe: copy the heading list from §2 of the guide verbatim into the builder, and treat
+`check.py` as the arbiter rather than your memory of the template.
+
+Whichever path, the notebook is regenerated and re-executed from the builder after every
+prose fix — never hand-patched in the `.ipynb`, which desynchronises it from the source
+that produced it.
 
 ## Phase 4 — Write (fill sections in THIS order, not top to bottom)
 
@@ -146,7 +163,17 @@ Style constraints while writing (the checker warns on some, honor all):
 1. **Restart kernel & Run All.** Every cell executes top to bottom in the `.venv`; the
    shipped file carries a clean 1..N execution order. Cells that legitimately can't run
    carry an allowed marker (`# long-running`, `# GPU recommended`,
-   `# illustrative - not captured output`).
+   `# illustrative - not captured output`). Headless equivalent, run **from inside the
+   series folder** so the notebook's `Path.cwd() / "_lab" / ...` module load resolves:
+
+```bash
+cd "<series-folder>" && ..\.venv\Scripts\python -m jupyter nbconvert --to notebook --execute --inplace "<id> <Title>.ipynb" --ExecutePreprocessor.timeout=3600
+```
+
+   Two things this catches that a lab run does not: a notebook that depends on state the
+   lab set up for itself, and any number that is not reproducible across runs — timings
+   especially. Quote ratios and artifact sizes, never raw wall-clock, unless the prose
+   says the figure is machine-dependent.
 2. Run the checker; loop until exit code 0:
 
 ```bash

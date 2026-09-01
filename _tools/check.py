@@ -362,6 +362,15 @@ def check_notebook(path: Path) -> Report:
     # E02 — decimals in prose must exist in code/outputs (fabrication tripwire)
     known = "\n".join(cell_source(c) + "\n" + outputs_text(c) for c in code_cells)
     known_nums = set(re.findall(r"\d+\.\d+", known))
+    # Comma-grouped integers (3,789 / 27,290) are data quantities, not years, and were
+    # previously invisible here: normalise separators on both sides and compare digits.
+    def _digits(s: str) -> str:
+        return s.replace(",", "").replace("_", "")
+
+    known_ints = {_digits(m) for m in re.findall(r"\d{1,3}(?:[,_]\d{3})+", known)}
+    # Plain integers too (JSON/manifest output writes 5500, not 5,500). Exclude matches
+    # preceded by a dot so decimal fragments ("0.4499" -> "4499") do not become knowns.
+    known_ints |= {m for m in re.findall(r"(?<![\d.])\d{4,}(?!\d)", known)}
     body_md = "\n\n".join(cell_source(c) for c in md_cells[1:])  # skip header block
     suspicious = []
     for ln in prose_lines(body_md):
@@ -374,6 +383,9 @@ def check_notebook(path: Path) -> Report:
                 continue
             if num not in known_nums and num not in suspicious:
                 suspicious.append(num)
+        for grouped in re.findall(r"\d{1,3}(?:,\d{3})+", ln):
+            if _digits(grouped) not in known_ints and grouped not in suspicious:
+                suspicious.append(grouped)
     if suspicious:
         rep.warn("E02", f"decimal(s) in prose not found in any code/output: "
                         f"{', '.join(suspicious[:8])} — captured, or fabricated? "
@@ -549,6 +561,12 @@ def check_series(path: Path, strict: bool) -> list[Report]:
     if notebooks and not (path / "_recap.md").exists():
         r = Report(path / "_recap.md")
         r.warn("S02", "_recap.md not written yet (required when the series completes)")
+        reports.append(r)
+    if not reports:
+        # A mistyped path that happens to be a directory would otherwise exit 0 and read
+        # as a passing check. Say so instead.
+        r = Report(path)
+        r.warn("S03", "no notebooks, quiz or labs found here - is this the right folder?")
         reports.append(r)
     return reports
 

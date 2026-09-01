@@ -55,6 +55,7 @@ class Run:
     split_kind: str = "temporal"
     features: list[str] = field(default_factory=list)
     dedup_applied: bool = True
+    duplicate_rows: int = 0        # measured from the frame, not inferred from `defects`
     n_train: int = 0
     precision: float = 0.0
     baseline_precision: float = 0.0
@@ -102,7 +103,11 @@ def build_run(df_dedup: pd.DataFrame, df_raw: pd.DataFrame, defects: set[str]) -
     scores = fit(train, test)
     y = test["late"].to_numpy()
     rule = lab11.dunning_rule(test)
-    capacity = int(round(CAPACITY_FRAC * len(test)))
+    # Capacity IS the rule's queue size. Scoring the model at a different k would compare
+    # the two policies at different operating points - the error 01.1's Common Pitfalls
+    # forbids and _recap.md lists as invariant 2. A gate suite that encodes the series'
+    # invariants must not violate one of them.
+    capacity = int(rule.sum())
 
     if "threshold_selection" in defects:      # SHIP stage: a cutoff, not a capacity
         flag = scores >= 0.5
@@ -110,7 +115,9 @@ def build_run(df_dedup: pd.DataFrame, df_raw: pd.DataFrame, defects: set[str]) -
         flag = lab11.topk_flag(scores, capacity)
 
     run = Run(defects=defects, split_kind=split_kind, features=feats,
-              dedup_applied="no_dedup" not in defects, n_train=len(train),
+              dedup_applied="no_dedup" not in defects,
+              duplicate_rows=int(df.duplicated(subset=["invoice_id"]).sum()),
+              n_train=len(train),
               precision=lab11.precision_recall_at_k(y, flag)["precision"],
               baseline_precision=lab11.precision_recall_at_k(y, rule)["precision"],
               queue_size=int(flag.sum()), capacity=capacity,
@@ -149,8 +156,10 @@ def build_run(df_dedup: pd.DataFrame, df_raw: pd.DataFrame, defects: set[str]) -
 # ------------------------------------------------------------------- the gates
 
 def gate_data_contract(r: Run) -> tuple[bool, str]:
-    return r.dedup_applied, "duplicate rows dropped" if r.dedup_applied else \
-        "grain violated: duplicate invoice rows present"
+    """Inspects the DATA, not a flag the defect set - otherwise the gate is a tautology."""
+    ok = r.duplicate_rows == 0
+    return ok, ("duplicate rows dropped" if ok else
+                f"grain violated: {r.duplicate_rows:,} duplicate invoice rows present")
 
 
 def gate_leakage_blocklist(r: Run) -> tuple[bool, str]:
@@ -166,7 +175,8 @@ def gate_temporal_split(r: Run) -> tuple[bool, str]:
 
 def gate_beats_baseline(r: Run) -> tuple[bool, str]:
     ok = r.precision > r.baseline_precision
-    return ok, (f"model {r.precision:.4f} vs rule {r.baseline_precision:.4f}")
+    return ok, (f"model {r.precision:.4f} vs rule {r.baseline_precision:.4f} "
+                f"(both at k={r.capacity:,})")
 
 
 def gate_noise_band(r: Run) -> tuple[bool, str]:
@@ -209,6 +219,116 @@ DEFECTS = {
 }
 # The earliest gate index able to see each defect, for the detection-distance table.
 GATE_ORDER = list(GATES)
+
+
+def survivorship_effect(df_dedup: pd.DataFrame) -> None:
+    """MEASURE the survivorship blind spot instead of asserting it.
+
+    The modelling table is an inner join to payments, so a never-paid invoice cannot
+    appear in training or in any offline metric. Production scores every issued invoice.
+    Rebuild the missing rows with the same features, label them late (an unpaid invoice
+    past its due date is late by any definition), and score the model on the population
+    it would actually meet.
+    """
+    inv = pd.read_csv(lab11.RAW / "invoices.csv.gz").drop_duplicates()
+    inv["issue_date"] = pd.to_datetime(inv["issue_date"])
+    inv["due_date"] = pd.to_datetime(inv["due_date"])
+    inv["amount_num"] = pd.to_numeric(inv["amount"].astype(str).str.replace(",", ""),
+                                      errors="coerce")
+    pay = pd.read_csv(lab11.RAW / "payments.csv.gz",
+                      usecols=["invoice_id", "fx_rate_usd"])
+    fx = (pay.merge(inv[["invoice_id", "currency"]], on="invoice_id")
+            .groupby("currency")["fx_rate_usd"].median())
+    cus = pd.read_csv(lab11.RAW / "customers.csv")
+    cus["signup_date"] = pd.to_datetime(cus["signup_date"])
+    cus["employee_count"] = cus["employee_count"].replace(-999, np.nan)
+
+    win = inv.loc[(inv["issue_date"] >= "2025-01-01") & (inv["issue_date"] < "2025-06-01")]
+    missing = win.loc[~win["invoice_id"].isin(set(pay["invoice_id"]))].merge(
+        cus[["customer_id", "segment", "country", "plan", "industry", "seats",
+             "employee_count", "signup_date"]], on="customer_id", how="inner")
+    missing = missing.assign(
+        amount_usd=missing["amount_num"] / missing["currency"].map(fx),
+        terms_days=(missing["due_date"] - missing["issue_date"]).dt.days,
+        tenure_days=(missing["issue_date"] - missing["signup_date"]).dt.days,
+        issue_month=missing["issue_date"].dt.month,
+        late=1,                       # unpaid and past due: late by any definition
+    )
+
+    w = lab11.windows(df_dedup)
+    train = w["train"].sample(n=TRAIN_N, random_state=SEED)
+    resolved = w["test_stable"]
+    full = pd.concat([resolved, missing[resolved.columns.intersection(missing.columns)]],
+                     ignore_index=True)
+
+    print(f"  the population every series-01 metric was computed on : {len(resolved):,}")
+    print(f"  the population production would actually score        : {len(full):,}"
+          f"   (+{len(missing):,} never-paid, {len(missing)/len(full):.1%})")
+    print(f"  status of the invisible rows: "
+          f"{missing['status'].str.lower().value_counts().to_dict()}\n")
+
+    for label, frame in [("resolved only (what we measured)", resolved),
+                         ("full production population", full)]:
+        scores = lab11.fit_score(train, frame, seed=SEED)
+        y = frame["late"].to_numpy()
+        k = int(round(CAPACITY_FRAC * len(frame)))
+        m = lab11.precision_recall_at_k(y, lab11.topk_flag(scores, k))
+        rule = lab11.precision_recall_at_k(y, lab11.dunning_rule(frame))
+        print(f"  {label:<34} base rate {y.mean():.4f}   model prec {m['precision']:.4f}"
+              f"   rule prec {rule['precision']:.4f}")
+    print( "\n  the model was never trained on these rows and no offline number ever")
+    print( "  included them; the gate suite cannot see the gap because the training table")
+    print( "  is internally consistent - it is simply about a different population.")
+
+
+def leakage_mechanism(df_dedup: pd.DataFrame) -> None:
+    """WHY a leaked feature leaves production worse than never having had it.
+
+    Not 'under-weighting the honest features'. At serving time the leaked column is a
+    CONSTANT (always 0 on a freshly issued invoice), so it contributes an identical term
+    to every logit - a pure intercept shift - and precision@k ranks by the linear
+    predictor, which is invariant to that. Uniform shrinkage would cost exactly nothing.
+
+    The real damage: the honest coefficients are no longer marginal effects, they are
+    effects CONDITIONAL on the leaked column. That changes their relative sizes and can
+    reverse signs, so the ranking the model produces at serving time is a different
+    ranking, not a weaker version of the same one.
+    """
+    from scipy.stats import spearmanr
+
+    w = lab11.windows(df_dedup)
+    train = w["train"].sample(n=TRAIN_N, random_state=SEED)
+    test = w["test_stable"]
+
+    def fit(feats: list[str], frame: pd.DataFrame):
+        model = lab11.make_model()
+        model.named_steps["prep"].transformers[0] = (
+            "num", model.named_steps["prep"].transformers[0][1], feats)
+        model.named_steps["clf"].set_params(random_state=SEED)
+        model.fit(frame[feats + lab11.CAT], frame["late"])
+        return model
+
+    clean = fit(lab11.NUM, train)
+    leaky = fit(lab11.NUM + [LEAKY], train)
+    c_clean = clean.named_steps["clf"].coef_[0][: len(lab11.NUM)]
+    c_leaky = leaky.named_steps["clf"].coef_[0][: len(lab11.NUM) + 1]
+
+    print(f"  {'numeric feature':<22}{'clean':>10}{'with leak':>12}{'ratio':>9}")
+    for i, name in enumerate(lab11.NUM):
+        ratio = c_leaky[i] / c_clean[i] if abs(c_clean[i]) > 1e-9 else float("nan")
+        flag = "  <- SIGN FLIP" if c_clean[i] * c_leaky[i] < 0 else ""
+        print(f"  {name:<22}{c_clean[i]:>10.4f}{c_leaky[i]:>12.4f}{ratio:>9.2f}{flag}")
+    print(f"  {LEAKY:<22}{'-':>10}{c_leaky[len(lab11.NUM)]:>12.4f}")
+    corr = np.corrcoef(c_clean, c_leaky[: len(lab11.NUM)])[0, 1]
+    print(f"\n  correlation between the two honest-coefficient vectors: {corr:+.2f}")
+
+    prod = test.copy()
+    prod[LEAKY] = 0                      # what serving time actually looks like
+    s_clean = clean.predict_proba(test[lab11.NUM + lab11.CAT])[:, 1]
+    s_prod = leaky.predict_proba(prod[lab11.NUM + [LEAKY] + lab11.CAT])[:, 1]
+    rho = spearmanr(s_clean, s_prod).statistic
+    print(f"  Spearman(clean ranking, leaked model's PRODUCTION ranking): {rho:+.2f}")
+    print( "  -> not a degraded version of the clean ranking; a different one.")
 
 
 def report(r: Run, title: str) -> dict[str, bool]:
@@ -263,39 +383,23 @@ def main() -> None:
     print("\n" + "=" * 78)
     print("L2b THE DEFECT THIS SERIES' OWN PIPELINE HAS - survivorship in the population")
     print("=" * 78)
-    pay_ids = set(pd.read_csv(lab11.RAW / "payments.csv.gz",
-                              usecols=["invoice_id"])["invoice_id"])
-    raw_win = raw.drop_duplicates()
-    raw_win["issue_date"] = pd.to_datetime(raw_win["issue_date"])
-    raw_win = raw_win.loc[(raw_win["issue_date"] >= "2025-01-01")
-                          & (raw_win["issue_date"] < "2025-06-01")]
-    never_paid = raw_win.loc[~raw_win["invoice_id"].isin(pay_ids)]
-    resolved_n = len(w_stable := lab11.windows(df_dedup)["test_stable"])
-    print(f"  invoices issued in the evaluation window:            {len(raw_win):>8,}")
-    print(f"  of those, resolved (a payment exists) - the ONLY rows")
-    print(f"  that training and every offline metric ever saw:     {resolved_n:>8,}")
-    print(f"  never paid (overdue / disputed / written off):       {len(never_paid):>8,}"
-          f"  ({len(never_paid) / len(raw_win):.1%} of production scoring volume)")
-    print(f"  every one of them is late by any definition, none was in training, and none")
-    print(f"  appears in any number this series has reported")
-    survivorship = Run(defects={"survivorship"}, split_kind="temporal",
-                       features=list(lab11.NUM), dedup_applied=True,
-                       n_train=clean.n_train, precision=clean.precision,
-                       baseline_precision=clean.baseline_precision,
-                       noise_band=clean.noise_band, queue_size=clean.queue_size,
-                       capacity=clean.capacity, predicted_rate=clean.predicted_rate,
-                       actual_rate=clean.actual_rate)
-    surv_results = report(survivorship, "gate suite on the survivorship defect:")
-    matrix["survivorship"] = [g for g, ok in surv_results.items()
-                              if not ok and base_results[g]]
+    survivorship_effect(df_dedup)
+    print("\n  Why no gate fires, argued rather than injected: every gate above asserts")
+    print("  over an artifact of THIS run - the frame's duplicate count, its feature list,")
+    print("  its split kind, its queue size, its predicted rate. The survivorship defect is")
+    print("  a property of which rows reached the frame at all, and the frame is internally")
+    print("  consistent about the rows it contains. No assertion over it can see the gap.")
+    print("  This is a gate-coverage argument, not an injection result, so it is NOT")
+    print("  counted in the tally above.")
+    matrix["survivorship"] = []
     DEFECTS["survivorship"] = ("data", "train and evaluate on resolved invoices only")
-    print(f"    caught by: "
-          f"{', '.join(matrix['survivorship']) if matrix['survivorship'] else 'NOTHING - all gates green'}")
 
     print("\n" + "=" * 78)
     print("L3  THE SEDUCTIVE DEFECTS, QUANTIFIED")
     print("=" * 78)
     leak = build_run(df_dedup, df_raw, {"leakage"})
+    leakage_mechanism(df_dedup)
+    print()
     print(f"  leakage: offline precision {leak.precision:.4f} against the clean "
           f"{clean.precision:.4f}  ({leak.precision - clean.precision:+.4f})")
     print(f"           at serving time the column is always 0, so production precision "

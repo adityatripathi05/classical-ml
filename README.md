@@ -13,12 +13,17 @@ audio, recommenders) → production (interpretability, MLOps, capstones). Transf
 LLMs and everything generative belong to the separate `ai-engineering` repo — this track
 ends at attention as the bridge.
 
-This repo supersedes 2019-era notes: the original notebooks are quarantined under
-`_legacy-2019/` and each series is re-authored from scratch to the standard in
-[AUTHORING-GUIDE.md](AUTHORING-GUIDE.md).
+This repo supersedes 2019-era notes: each series is re-authored from scratch to the
+standard in [AUTHORING-GUIDE.md](AUTHORING-GUIDE.md). The original 2019 folders still sit
+untracked at the repo root as a scope reference (see the legacy mapping in
+[CURRICULUM.md](CURRICULUM.md)); they are deleted series by series as their replacement
+reaches `done`.
 
-Curriculum baseline **v0.2, 2026-08-31**. Authoring has not started; series are written
-one at a time in numeric order.
+Curriculum baseline **v0.3, 2026-09-01**.
+
+**Progress: series 01 authored and in review** (6 notebooks, 6 lab scripts, quiz and
+recap). Series are written one at a time in numeric order, each opening with a pre-flight
+currency check and an approved topic tree.
 
 - [CURRICULUM.md](CURRICULUM.md) — the scope authority: every series with lane, level,
   dependencies, the legacy mapping, and **live progress**
@@ -26,6 +31,8 @@ one at a time in numeric order.
   (template, Stage A→B→C build rule, evidence rules, eval-driven depth, compute budget)
 - [AUTHORING-PROTOCOL.md](AUTHORING-PROTOCOL.md) — the step-by-step procedure that
   implements the standard (phase gates, planning block, decision tables)
+- [NEXT-SESSION.md](NEXT-SESSION.md) — the handoff block to paste into a fresh chat to
+  resume authoring; updated at every series boundary
 - [_tools/](_tools/README.md) — the harness: `scaffold.py` generates the exact template
   skeleton; `check.py` mechanically verifies conformance (headings, floors, executed
   evidence, quiz structure) and must exit 0 before a notebook ships

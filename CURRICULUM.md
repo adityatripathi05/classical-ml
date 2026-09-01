@@ -15,7 +15,8 @@ Track overview: [README.md](README.md).
 
 Legend: `[ ]` todo · `[~]` draft · `[r]` in review · `[x]` done.
 
-**Progress: 1/35 series authored** (series 01 complete, in review).
+**Progress: 1/35 series authored** — series 01 authored and reviewed end-to-end; held at
+`[r]` with open findings (see `01-ml-landscape-and-lifecycle/_review.md`), not yet `done`.
 
 ---
 

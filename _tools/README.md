@@ -26,7 +26,8 @@ Related has id links · **bookish datasets (iris/titanic/make_blobs/…) without
 (FAIL) · Fix has mitigation+permanent (WARN) · Diagnosis walks the ladder
 (WARN) · filler phrases (WARN) · seed hygiene (WARN). Quiz mode: "How to use" at top,
 exactly one `## Answers`, last section, and every `Q<n>` matched by an `A<n>` (markdown
-emphasis tolerated, so `**Q1.**` counts). Lab mode: filename pattern,
+emphasis tolerated, so `**Q1.**` counts). Directory mode also warns (S03) when a folder
+contains nothing checkable, so a mistyped path cannot masquerade as a passing run. Lab mode: filename pattern,
 docstring naming the notebook, `__main__` guard.
 
 ## scaffold.py — template generator
@@ -39,4 +40,26 @@ hand.
 .venv\Scripts\python _tools/scaffold.py 18.2 "The Kernel Trick and RBF SVMs" --series "18 Support Vector Machines" --level A --prereqs "14.1 (L2 regularization) . 16.1 (distance metrics)" --out "18-support-vector-machines"
 ```
 
-The full authoring procedure that uses both: [../AUTHORING-PROTOCOL.md](../AUTHORING-PROTOCOL.md).
+## The loop that actually ran for series 01
+
+```bash
+# 1. lab first - every number is produced here, before any prose exists
+.venv\Scripts\python "<series-folder>/_lab/lab_<id>_<slug>.py"
+
+# 2. generate the notebook (scaffold.py, or a scratchpad builder script - protocol Phase 3)
+
+# 3. execute it FROM INSIDE the series folder, so Path.cwd()/"_lab" resolves
+cd "<series-folder>" && ..\.venv\Scripts\python -m jupyter nbconvert --to notebook --execute --inplace "<id> <Title>.ipynb" --ExecutePreprocessor.timeout=3600
+
+# 4. gate: fix and repeat 2-3 until this exits 0
+.venv\Scripts\python _tools/check.py "<series-folder>/<id> <Title>.ipynb"
+
+# 5. when the series is finished
+.venv\Scripts\python _tools/check.py "<series-folder>"
+```
+
+Step 3 is not optional and not equivalent to step 1: executing the notebook is what
+proves the prose's numbers came from cells the reader can re-run, and it is what exposes
+figures that are not reproducible across runs (wall-clock timings especially).
+
+The full authoring procedure that uses both tools: [../AUTHORING-PROTOCOL.md](../AUTHORING-PROTOCOL.md).

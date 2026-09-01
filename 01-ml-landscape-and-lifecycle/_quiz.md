@@ -37,7 +37,7 @@ closed most of the gap. *(01.1)*
 the model in production: name them and state, for each, what its value would be at the instant
 the scoring decision is actually made. *(01.1)*
 
-**Q6.** Design the dunning queue system end to end for a team that can work 300 invoices a day.
+**Q6.** Design the dunning queue system end to end for a team that can work 48 invoices a day.
 Include what runs in production on day one, what runs in shadow, and the specific condition
 that would flip the decision later. *(01.1 — design this)*
 
@@ -89,18 +89,18 @@ residual, and what would make a 0.1% gap *less* acceptable than this one? *(01.2
 team believes its runs are reproducible. Explain what is actually pinned, what is not, and the
 four-line experiment that settles it. *(01.3 — debug this)*
 
-**Q19.** The same pipeline reports a spread of 0.0078 when you resample the training set and
-0.0378 when you re-draw the evaluation rows. Explain why these differ by a factor of 4.9, how
-each scales with sample size, and which one bounds what a single run may claim.
-*(01.3 — derive this)*
+**Q19.** The same pipeline reports a standard deviation of 0.0032 when you resample the training
+set with the holdout fixed, and 0.0101 when you re-draw the holdout. A fourth number, 0.0068, is
+the spread of the model-minus-rule *difference* on those same re-drawn holdouts. Explain all
+three, and say which one a shipping decision should be judged against. *(01.3 — derive this)*
 
 **Q20.** A colleague rolls back by checking out December's commit and rerunning training. State
 every reason this can fail to reproduce December's model, and give the artifact-level fix.
 *(01.3)*
 
-**Q21.** Two model artifacts have different content digests but disagree on 0.6% of queue
-decisions. Are they the same model? What should the digest trigger, and what should the
-disagreement rate decide? *(01.3)*
+**Q21.** Two model artifacts have different content digests, score identically on a clean
+holdout, and disagree on 0.4% of queue decisions. Are they the same model? What should the
+digest trigger, and what should the disagreement rate decide? *(01.3)*
 
 **Q22.** Design the reproducibility contract for a team shipping a model monthly: what each run
 records, what is stored, what CI enforces, and what a reviewer must see in a pull request before
@@ -114,9 +114,10 @@ close the gap. *(01.3)*
 rebuilds a manifest and returns the list of fields that moved. Then explain why the manifest
 must keep inputs and outputs in separate blocks. *(01.3)*
 
-**Q25.** A daily work queue swings from 1,773 items one week to 241 the next, with no deploy, no
-data fault and a green model dashboard. Name the failure, and give the one-line change that fixes
-it today. *(01.4 — debug this)*
+**Q25.** A daily work queue built by thresholding a probability delivers between 4 and 23 items
+a day to a team staffed for 48 — never once filling the roster, with a 5.8x swing between the
+busiest and quietest day — while the model dashboard stays green and no deploy has happened.
+Name the failure, and give the one-line change that fixes it today. *(01.4 — debug this)*
 
 **Q26.** Derive why a fixed probability threshold cannot guarantee a fixed queue size, and state
 the quantity a capacity-based selector fixes instead. *(01.4 — derive this)*
@@ -232,7 +233,7 @@ freshly issued invoice it is always 0. And `total_lifetime_value_usd`, computed 
 including revenue after the prediction window — at scoring time only the history so far exists.
 Both are SPEC M10 leakage traps. *(01.1)*
 
-**A6.** Day one: the rule in production as the queue policy, selecting top-k under the 300/day
+**A6.** Day one: the rule in production as the queue policy, selecting top-k under the 48/day
 capacity rather than by a fixed probability threshold. Shadow: the value-weighted model scoring
 every invoice and logging its queue without acting. Guard: fall back to the rule whenever the
 calibration gap exceeds 0.05. Flip condition: shadow model value captured exceeds the rule's by
@@ -253,7 +254,9 @@ because precision and recall both move with queue size: comparing a model at its
 threshold against a rule at its natural flag rate measures appetite for queue size, not skill.
 *(01.1)*
 
-**A9.** Label shift — P(y|x) changed while P(x) did not. The gateway migration altered the
+**A9.** Concept drift, i.e. posterior shift — P(y|x) changed while P(x) did not. (The name
+"label shift" belongs to the opposite case, where the class prior P(y) moves with P(x|y) fixed;
+here the prior moved as a consequence, not a cause.) The gateway migration altered the
 outcome-generating process for non-Indian customers (median days-late 2 → 6) while every input
 column kept its distribution, so any monitor watching inputs alone cannot see it. Detecting it
 requires comparing predictions against realized outcomes: calibration and recall against delayed
@@ -316,10 +319,13 @@ algorithm, not of the parameter's presence. *(01.3)*
 
 **A19.** They measure different things. Resampling the training set perturbs the fitted
 coefficients, and with a six-figure training pool the fit is well determined, so the effect is
-small. Re-drawing the evaluation rows changes which 5,500 invoices are scored, and sampling
-noise on a proportion scales roughly as the inverse square root of the queue size, so a small
-holdout dominates. The evaluation term bounds what a single run can report, which makes it the
-one that must be compared against any claimed improvement. *(01.3)*
+small (0.0032). Re-drawing the evaluation rows changes which 5,500 invoices are scored, and
+sampling noise on a proportion scales roughly as the inverse square root of the queue size, so a
+small holdout dominates (0.0101). ⚠️ But neither is automatically the band to judge a *claim*
+against: the claim is a model-minus-rule difference on identical rows, and because both policies
+move together on the same draw (correlation 0.785) its variance is `Var(A)+Var(B)−2·Cov(A,B)` —
+here 0.0068, giving a two-sigma band of 0.0136 that 01.1's +0.0194 clears. Match the band to the
+quantity claimed; judging a paired gain by a marginal spread rejects supported results. *(01.3)*
 
 **A20.** A commit reproduces the process, not the object. The data may have grown, since a live
 query with no snapshot bound makes the run date a hidden input; the split may be re-drawn; a
@@ -355,11 +361,12 @@ appears as a config-only difference instead of being mistaken for a reproduced e
 so that a changed result can be attributed to the specific input that moved. *(01.3)*
 
 **A25.** A framing mismatch, not a model fault: the queue is selected by thresholding a
-probability, so its size is the mass of the score distribution above the cutoff and drifts with
-that distribution, while the business constraint is a fixed headcount. Today's fix is to replace
-`scores >= t` with top-*k* selection at the team's capacity — no retraining, and on the measured
-window precision rises to 0.6333 because the highest-scoring invoices are genuinely the riskiest.
-*(01.4)*
+probability, so its size is the mass of the score distribution above the cutoff and moves with
+that distribution and with each day's invoice mix, while the business constraint is a fixed
+headcount. Today's fix is to replace `scores >= t` with top-*k* selection at the team's capacity
+— one line, no retraining. ⚠️ Be careful what you claim for it: precision *falls* (0.6203 to
+0.4886) because the queue is larger, and the win is that the queue is filled at all — 516 late
+invoices caught against 263, roughly double, using capacity already being paid for. *(01.4)*
 
 **A26.** Queue size under a threshold is the count of scores at or above *t*, which equals *n*
 times the survival function of the score distribution at *t*; both *n* and that distribution move
@@ -480,7 +487,9 @@ not merely fail to transfer; it displaces signal that would have. *(01.6)*
 
 **A44.** It bites when the relationship between features and outcome changes over time, not when
 only the base rate moves. Here the gateway migration shifted the late rate without changing the
-feature-outcome mapping, so training on contemporaneous rows helped calibration and barely helped
+feature-outcome mapping *uniformly* — it moved for the non-Indian subpopulation that `country`
+already identifies, and roughly uniformly within it, so the ordering survived even though the
+level did not. Training on contemporaneous rows therefore helped calibration and barely helped
 ranking. Measure it by holding the test rows fixed and varying only whether training saw
 contemporaneous data — comparing two different test sets confounds the effect with a base-rate
 difference and can even show the wrong sign. *(01.6)*

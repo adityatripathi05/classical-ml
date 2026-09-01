@@ -77,18 +77,24 @@ def grain_report(name: str, key: str, declared: str) -> pd.DataFrame:
 def join_experiments(inv: pd.DataFrame, pay: pd.DataFrame, tck: pd.DataFrame,
                      cus: pd.DataFrame) -> None:
     naive = inv.merge(pay, on="invoice_id", how="inner")
-    represented = naive["invoice_id"].nunique()
-    lost = inv["invoice_id"].nunique() - represented
+    # Row-level decomposition, so the arithmetic actually closes. `mult` is how many
+    # payment rows each INVOICE ROW will multiply into: 0 drops it, 2 adds one, and so on.
+    mult = inv["invoice_id"].map(pay.groupby("invoice_id").size()).fillna(0).astype(int)
+    removed = int((mult == 0).sum())
+    added = int((mult - 1).clip(lower=0).sum())
+    net = len(naive) - len(inv)
     print(f"  invoices({len(inv):,}) x payments({len(pay):,}) inner join -> "
-          f"{len(naive):,} rows   (net change {len(naive) - len(inv):+,}, "
-          f"{(len(naive) - len(inv)) / len(inv):+.2%})")
+          f"{len(naive):,} rows   (net change {net:+,}, {net / len(inv):+.2%})")
     print(f"    but that small net hides two large opposite effects:")
-    print(f"      - {lost:,} invoices DROPPED (never paid: overdue/disputed/written off)")
-    print(f"      - {len(naive) - represented:,} extra rows ADDED by fan-out "
+    print(f"      - {removed:,} invoice rows DROPPED (no payment row to match)")
+    print(f"      - {added:,} extra rows ADDED by fan-out "
           f"({int((pay.groupby('invoice_id').size() > 1).sum()):,} invoices have >1 "
           f"payment, SPEC M13)")
-    print(f"    fan-out factor {len(naive) / max(represented, 1):.3f} -> any per-invoice "
-          f"average computed on this frame double-counts the split-paid invoices")
+    print(f"      - check: {added:,} added - {removed:,} removed = {added - removed:+,} "
+          f"= the net  ({'closes' if added - removed == net else 'DOES NOT CLOSE'})")
+    print(f"      - rows that MOVED in one direction or the other: {added + removed:,}")
+    print(f"    fan-out factor {len(naive) / max(naive['invoice_id'].nunique(), 1):.3f} -> "
+          f"any per-invoice average computed on this frame double-counts split-paid invoices")
 
     agg = pay.groupby("invoice_id", as_index=False).agg(n_payments=("payment_id", "size"))
     safe = inv.merge(agg, on="invoice_id", how="left", validate="m:1")
@@ -97,20 +103,25 @@ def join_experiments(inv: pd.DataFrame, pay: pd.DataFrame, tck: pd.DataFrame,
 
     joined = tck.merge(cus[["customer_id", "segment"]], on="customer_id", how="inner")
     lost = len(tck) - len(joined)
+    spam_total = int(tck["category"].eq("spam").sum())
     spam_lost = int(tck.loc[tck["customer_id"].isna(), "category"].eq("spam").sum())
     print(f"  tickets({len(tck):,}) x customers inner join -> {len(joined):,} rows, "
           f"{lost:,} silently dropped")
-    print(f"    of the dropped, {spam_lost:,} are spam tickets with no customer_id "
-          f"(SPEC M14) -> a spam classifier trained on the join never sees its own "
-          f"positive class")
+    print(f"    every dropped row is spam ({spam_lost:,} of them), but that is not the same")
+    print(f"    as every spam row being dropped: {spam_total:,} spam tickets exist, so the")
+    print(f"    join removes {spam_lost / spam_total:.0%} of the positive class and leaves "
+          f"{spam_total - spam_lost:,}")
+    print(f"    behind - the atypical ones that happened to carry a customer_id (SPEC M14)")
 
 
 # --------------------------------------------------------------- L4: the incident
 
 def currency_incident(inv: pd.DataFrame, pay: pd.DataFrame) -> None:
-    raw_str = pd.read_csv(RAW / "invoices.csv.gz", nrows=200_000)["amount"]
+    n_probe = 200_000
+    raw_str = pd.read_csv(RAW / "invoices.csv.gz", nrows=n_probe)["amount"]
     print(f"  invoices.amount dtype as read: {raw_str.dtype!r}  (SPEC M7: legacy exports "
           f"carry '4,554.29')")
+    print(f"  (probe reads the first {n_probe:,} rows, not the whole file)")
     try:
         total = raw_str.sum()
         kind = type(total).__name__
