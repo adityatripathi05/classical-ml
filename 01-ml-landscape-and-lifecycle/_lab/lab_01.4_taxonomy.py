@@ -9,6 +9,8 @@ Reproduces every captured number and listing in 01.4:
   L4  the estimator API as the taxonomy: which methods exist tells you the problem type
   L5  label availability - why unsupervised methods exist at all (censoring by recency)
   L6  what the choice costs in production: parametric vs non-parametric, batch vs online
+  L7  the serving contract as production code - a capacity queue that asserts its own
+      size, logs a decision record, and refuses malformed requests (Stage C)
 
 Reuses the 01.1 dataset builder. Runtime ~5 min on CPU (the framing-band refits and the
 KNN latency probe dominate).
@@ -20,8 +22,11 @@ from __future__ import annotations
 
 import importlib.util
 import inspect
+import json
+import logging
 import sys
 import time
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -212,18 +217,19 @@ def threshold_vs_capacity(test: pd.DataFrame, scores: np.ndarray) -> None:
           f"capacity that was already being paid for")
 
 
-def daily_queue_swing(df: pd.DataFrame, n_days: int = 20,
-                      cap_day: int = CAP_DAY) -> None:
-    """The actual incident: a FIXED threshold on a MOVING daily score distribution.
+def live_model_and_days(df: pd.DataFrame,
+                        n_days: int = 20) -> tuple[object, pd.DataFrame, list]:
+    """The era-consistent scoring setup every daily view in this notebook shares.
 
-    The threshold sweep above varies t on one pooled window; that is not what production
-    does. Production holds t fixed and meets a different day's invoices every morning.
+    The model live in spring 2026 is the one RETRAINED on the post-migration regime
+    (01.1's permanent fix, mid-2025), fitted ONCE and then scoring each morning's
+    invoices, exactly as the scoring job does. Scoring these days with the stale
+    pre-2025 model would manufacture a more dramatic starvation out of 01.1's drift
+    incident, which is a different failure.
 
-    Era-consistent evidence: the model live in spring 2026 is the one RETRAINED on the
-    post-migration regime (01.1's permanent fix, mid-2025) - so that model is fitted
-    once, then scores each day, exactly as the scoring job does. Scoring these days with
-    the stale pre-2025 model would manufacture a more dramatic starvation out of 01.1's
-    drift incident, which is a different failure.
+    Extracted so the threshold view and the capacity view below cannot drift apart:
+    an inline second copy of this setup is how two sections end up disagreeing about
+    which model produced which day.
     """
     post = df.loc[(df["issue_date"] >= lab11.MIGRATION)
                   & (df["issue_date"] < "2026-01-01")]
@@ -232,6 +238,17 @@ def daily_queue_swing(df: pd.DataFrame, n_days: int = 20,
     window = df.loc[(df["issue_date"] >= "2026-03-01") & (df["issue_date"] < "2026-04-14")]
     days = [d for d in sorted(window["issue_date"].unique())
             if (window["issue_date"] == d).sum() >= 30][-n_days:]
+    return model, window, days
+
+
+def daily_queue_swing(df: pd.DataFrame, n_days: int = 20,
+                      cap_day: int = CAP_DAY) -> None:
+    """The actual incident: a FIXED threshold on a MOVING daily score distribution.
+
+    The threshold sweep above varies t on one pooled window; that is not what production
+    does. Production holds t fixed and meets a different day's invoices every morning.
+    """
+    model, window, days = live_model_and_days(df, n_days)
     rows, pooled_pred, pooled_actual, pooled_n = [], 0.0, 0.0, 0
     for day in days:
         d = window.loc[window["issue_date"] == day]
@@ -336,8 +353,10 @@ def production_costs(train: pd.DataFrame, test: pd.DataFrame) -> None:
 
     def timed(model, label: str) -> tuple[float, float]:
         """Artifact size is deterministic; wall-clock timing is not. Report both. Even
-        the RATIO wobbles run to run (7-11x across our reruns), so it is quoted as an
-        order of magnitude, never as a constant - median of 7 reps to damp the noise."""
+        the RATIO wobbles run to run (7-16x across our reruns, on the same machine and
+        the same seed), so it is quoted as an order of magnitude, never as a constant -
+        median of 7 reps to damp the noise. Widen this range, do not tighten the prose,
+        if a later run lands outside it."""
         model.fit(X_tr, y_tr)
         size = len(pickle.dumps(model)) / 1024
         times = []
@@ -378,6 +397,120 @@ def production_costs(train: pd.DataFrame, test: pd.DataFrame) -> None:
         print(f"    after {q}: n={len(chunk):>6,}  precision@k={m['precision']:.4f}")
 
 
+# ------------------- L7: the serving contract as production code (Stage C)
+
+LOG = logging.getLogger("payflow.dunning.queue")
+
+
+class ContractViolation(RuntimeError):
+    """The queue could not be built within its contract. Callers must not ship it."""
+
+
+@dataclass(frozen=True)
+class QueueRequest:
+    """What collections asks for each morning. `roster` is an INPUT, which is the whole
+    difference between this design and the one in the cold open."""
+    roster: int                      # slots the team can actually work today
+    risk_floor: float = 0.0          # never contact below this modelled risk
+    model_version: str = "unknown"   # travels into the decision record, per 01.3
+
+
+@dataclass(frozen=True)
+class QueueDecision:
+    """The queue, plus everything a monitor needs to tell a quiet day from a broken one."""
+    invoice_ids: list[str] = field(default_factory=list)
+    roster: int = 0
+    returned: int = 0
+    implied_cutoff: float | None = None    # the k-th order statistic: an OUTPUT now
+    floor_rejected: int = 0
+    scored: int = 0
+    model_version: str = "unknown"
+
+    def record(self) -> dict:
+        """One structured line per run. Queue size is no longer a thing to be surprised
+        by, because it is asserted; what varies, and therefore what is worth alerting
+        on, is the implied cutoff and the floor-rejection count."""
+        d = asdict(self)
+        d.pop("invoice_ids")                    # the ids go to the queue, not the log
+        if self.implied_cutoff is not None:
+            d["implied_cutoff"] = round(self.implied_cutoff, 4)
+        d["utilisation"] = round(self.returned / self.roster, 4) if self.roster else None
+        return d
+
+
+def build_capacity_queue(invoice_ids, scores, req: QueueRequest) -> QueueDecision:
+    """Return AT MOST `req.roster` invoice ids, riskiest first.
+
+    The contract is a size guarantee, which a probability threshold cannot make at any
+    parameter value: `count(score >= t)` is n times the score distribution's survival
+    function at t, so it moves whenever either moves. Fixing the count instead makes the
+    cutoff the free variable - it becomes the k-th order statistic and floats daily.
+
+    Returning FEWER than the roster is legal and happens only when the risk floor bites;
+    returning more is a contract violation and raises rather than silently over-serving.
+    """
+    if req.roster < 1:
+        raise ValueError(f"roster must be >= 1, got {req.roster}")
+    scores = np.asarray(scores, dtype=float)
+    if len(invoice_ids) != len(scores):
+        raise ValueError(f"{len(invoice_ids):,} ids against {len(scores):,} scores")
+    if len(scores) and not np.isfinite(scores).all():
+        raise ContractViolation(f"{int((~np.isfinite(scores)).sum()):,} of "
+                                f"{len(scores):,} scores are not finite: refusing to rank")
+
+    ids = np.asarray(invoice_ids)
+    ranked = np.argsort(-scores, kind="stable")[:req.roster]   # stable: ties are ordered
+    kept = ranked[scores[ranked] >= req.risk_floor]
+    decision = QueueDecision(
+        invoice_ids=ids[kept].tolist(), roster=req.roster, returned=int(len(kept)),
+        implied_cutoff=float(scores[kept[-1]]) if len(kept) else None,
+        floor_rejected=int(len(ranked) - len(kept)), scored=int(len(scores)),
+        model_version=req.model_version)
+    if decision.returned > req.roster:                 # the assertion the old design
+        raise ContractViolation(                       # could not even express
+            f"queue of {decision.returned:,} exceeds roster {req.roster:,}")
+    LOG.info("dunning queue built: %s", decision.record())
+    return decision
+
+
+def serving_contract_days(df: pd.DataFrame, n_days: int = 20,
+                          roster: int = CAP_DAY) -> None:
+    """The same days, the same model, the same scores - selected by capacity instead."""
+    model, window, days = live_model_and_days(df, n_days)
+    version = f"logreg@post-migration-{lab11.MIGRATION:%Y%m}"
+    for floor in (0.0, THRESHOLD):
+        decisions = []
+        for day in days:
+            d = window.loc[window["issue_date"] == day]
+            sc = model.predict_proba(d[lab11.NUM + lab11.CAT])[:, 1]
+            decisions.append(build_capacity_queue(
+                d["invoice_id"].tolist(), sc,
+                QueueRequest(roster=roster, risk_floor=floor, model_version=version)))
+        sizes = [x.returned for x in decisions]
+        cuts = [x.implied_cutoff for x in decisions if x.implied_cutoff is not None]
+        label = "no floor" if floor == 0 else f"risk floor {floor}"
+        print(f"  {label:<16} queue min {min(sizes):>3}  max {max(sizes):>3}  "
+              f"full on {sum(s == roster for s in sizes)}/{len(sizes)} days   "
+              f"implied cutoff {min(cuts):.4f}..{max(cuts):.4f}")
+    print(f"\n  the queue size stopped moving and the CUTOFF started moving - that is the")
+    print(f"  trade, stated rather than discovered. With a floor the contract may return")
+    print(f"  fewer than {roster}, and the decision record says so instead of the team")
+    print(f"  wondering: {json.dumps(decisions[-1].record())}")
+
+    print("\n  malformed requests fail loudly rather than returning a plausible queue:")
+    sample = window.head(3)
+    ok_ids = sample["invoice_id"].tolist()
+    for ids, sc, ros, why in (
+            (ok_ids, [0.9, 0.1], roster, "ids and scores of different length"),
+            (ok_ids, [0.9, float("nan"), 0.1], roster, "a non-finite score"),
+            (ok_ids, [0.9, 0.5, 0.1], 0, "a roster of zero")):
+        try:
+            build_capacity_queue(ids, sc, QueueRequest(roster=ros))
+            print(f"    NOT REJECTED: {why}")
+        except (ValueError, ContractViolation) as exc:
+            print(f"    {why:<36} -> {type(exc).__name__}: {exc}")
+
+
 def main() -> None:
     df, _ = lab11.build_dataset()
     w = lab11.windows(df)
@@ -416,6 +549,11 @@ def main() -> None:
     print("L6  WHAT THE CHOICE COSTS IN PRODUCTION")
     print("=" * 78)
     production_costs(train, test)
+
+    print("\n" + "=" * 78)
+    print("L7  THE SERVING CONTRACT AS PRODUCTION CODE")
+    print("=" * 78)
+    serving_contract_days(df)
 
 
 if __name__ == "__main__":

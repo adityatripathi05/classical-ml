@@ -195,6 +195,21 @@ checks the suite structurally cannot perform, and what you would require before 
 **Q46.** Mini coding challenge. From memory, write the calibration gate and the serving-contract
 gate as functions over a run object, then state which lifecycle stage each one guards. *(01.6)*
 
+**Q48.** `build_capacity_queue` returns at most `roster` ids and raises if it ever would return
+more. A probability threshold cannot make that promise at any value of *t*. State the reason in
+terms of the score distribution, say what becomes the free variable once the count is fixed, and
+explain why setting the risk floor to the old deployed threshold reproduces the original
+incident. *(01.4 — derive this)*
+
+**Q49.** `LabelSpec` is a frozen dataclass whose fingerprint deliberately excludes its measured
+base rate. Give both reasons. Then name the two clauses of the campaign's own spec that the
+validator rejects, and say which different clause the 730-day variant trips instead. *(01.5)*
+
+**Q50.** `release_gate()` returns an `ungated_risks` field on every run, including runs where all
+seven gates pass. Argue for that field: what does a reviewer learn from it that a green board
+does not tell them, and why can none of the three listed risks be rewritten as an assertion over
+the run object? *(01.6 — design this)*
+
 **Q47.** Series-wide design prompt. PayFlow's VP Engineering asks you to write the one-page
 policy that governs when a team in your organization is allowed to replace a business rule with
 a trained model, and what data guarantees must hold before any model is trained at all. Write
@@ -521,6 +536,37 @@ is written down. *(01.6)*
 monitor stage. Serving-contract gate: `run.queue_size == run.capacity`, guarding the ship stage.
 Both are assertions over recorded fields, which is precisely why they can be automated and why
 gates over unrecorded intent cannot. *(01.6)*
+
+**A48.** Queue size under a threshold is the row count times the survival function of the score
+distribution evaluated at *t*, so it moves whenever the day's volume moves or its score
+distribution moves — and in production both move every morning. Fixing the count instead makes
+the cutoff the free variable: it becomes the *k*-th order statistic, which floated between
+0.3993 and 0.5528 across the twenty days measured. Setting the risk floor to 0.5 composes the two
+designs, so on any day when fewer than 48 invoices score above 0.5 the floor binds and the queue
+collapses back to exactly the threshold design's size — which is why that row reproduces the
+incident's minimum of 28 and fills the roster on only 2 of 20 days. The difference is not the
+outcome but the reporting: the decision record carries `utilisation` and `floor_rejected`, so a
+short queue is a measured state rather than something the analysts discover. *(01.4)*
+
+**A49.** Frozen because a spec that can be mutated in place is a spec whose fingerprint lies —
+the hash would no longer identify what was actually applied. The measured base rate sits outside
+the hash because re-measuring the same definition on more data must not read as a *different*
+definition: identity belongs to the definition, while the measurement is an attribute of one
+application of it. The campaign's v1 trips two clauses — no horizon, so the target is a state
+("is a churner") that can be recognised but not predicted, and a population of all signed-up
+customers, which admits the 415 who had already churned at the cutoff. The 730-day variant fixes
+both and trips right-censoring instead: the cutoff plus 730 days lands past the extraction date,
+so that label is really "churns before the data ends". *(01.5)*
+
+**A50.** A green board is evidence about the checks that exist and silence about everything else,
+so a reviewer reading only PASS lines cannot tell "this was checked and is fine" from "nothing
+looks at this". Printing the blind spots makes detection distance a field a reviewer sees rather
+than a paragraph somebody has to remember. None of the three can be rewritten as an assertion
+over the run object because each is a mis-specification — a property of the question that was
+asked, not of any artifact the run produced. The run is internally consistent about the label it
+used, the population its join produced and the offer it never modelled at all; comparing any of
+them against the decision they were meant to serve needs a second document the run does not
+contain, which is precisely what 01.5's label spec supplies for the first of them. *(01.6)*
 
 **A47.** A strong answer names: the incumbent rule or heuristic is measured first and becomes the
 floor; the comparison happens at a matched operating point on a temporal split; the business

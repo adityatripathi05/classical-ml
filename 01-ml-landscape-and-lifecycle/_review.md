@@ -617,3 +617,80 @@ Stage A hides its mechanism behind `lab.build_framings()`; interview answer shap
 away their numbers (defeats retrieval practice); three notebooks open by positioning against
 textbooks; 01.5 re-runs `cost_curve` verbatim in its Production Scenario. 01.4's duplicated
 listing was resolved this round by moving the daily block into the scenario.
+
+**→ All five were decided and implemented in round four, below.**
+
+---
+
+## Round four — the structural items, closed (2026-09-01)
+
+Not a review pass: a fix pass against the five items round three left open. The decision on
+every one was to build the thing rather than justify its absence, because in each case the
+notebook was already *arguing* for an artifact it did not produce.
+
+**Stage C is now production code in all three notebooks.** Each artifact is the permanent fix
+its own incident demands, which is why these read as the payoff rather than an appendix.
+
+- **01.4 → `build_capacity_queue`** (`QueueRequest` / `QueueDecision` / `ContractViolation`).
+  Roster is an input; the cutoff becomes the *k*-th order statistic and floats. Captured: the
+  size guarantee holds on 20 of 20 days against a design that matched the roster on none, while
+  the implied cutoff floats 0.3993–0.5528. Setting the risk floor to 0.5 — the cold open's
+  deployed threshold — composes the two designs and reproduces the incident from the other
+  direction (min 28, roster filled on 2 of 20), with `utilisation` and `floor_rejected` in the
+  decision record so a short queue is measured rather than noticed. Boundary cases (length
+  mismatch, non-finite score, zero roster) raise instead of returning a plausible list.
+- **01.5 → `LabelSpec`**, the artifact the Permanent Fix had promised for three drafts. Frozen
+  (a mutable spec's fingerprint lies), fingerprinted over the definition only (re-measuring must
+  not read as redefining), with `apply()` as the sole supported way to build the label,
+  `assert_scorable()` as the acceptance test the Prevention list asks for, and
+  `manifest_entry()` so a base rate cannot travel without its population and horizon. The
+  validator rejects the campaign's own spec on two clauses and the 730-day variant on
+  right-censoring.
+- **01.6 → `release_gate()` / `release_gate_cli()`**. Returns a dict, so the same function backs
+  CI, the deploy path and the notebook; blocking vs advisory (G7 is advisory — it is a mean-rate
+  tripwire, not a correctness check); JSON verdict; exit code. The load-bearing field is
+  `ungated_risks`, printed on every run including all-green ones, which turns detection distance
+  into something a reviewer sees rather than remembers.
+
+**The other four.** 01.4's Stage A now builds the four targets by hand in a visible cell before
+delegating the fits, so the shared-target/different-contract point is shown rather than asserted.
+01.5's Production Scenario stops re-running `cost_curve` verbatim and instead runs the Stage C
+gate against the spec the campaign actually shipped on — new evidence, and it closes the incident
+with the artifact from two sections earlier. Interview answer shapes in 01.4 (Q5, Q6), 01.5 (Q1,
+Q4, Q7) and 01.6 (Q6) no longer hand over their measured values; they name the quantity and say
+where to get it. 01.4's Concept no longer opens against textbooks, and 01.3's "usually taught as
+hygiene" was recast to position against how teams *budget* it — one instance of the move, not
+three.
+
+**Two defects found while doing it**, both of the class the earlier rounds kept hitting:
+
+- **Two definitions of "when the data ends" in 01.5.** `horizon_tradeoff` hardcoded
+  `2026-08-31` (giving the 427-day observable horizon in the prose) while a measured
+  `inv["issue_date"].max()` gives 2026-08-28. Now a single `DATA_END` constant citing
+  `_data/SPEC.md`, used by both; `horizon_tradeoff`'s output is byte-identical.
+- **The latency-ratio range in `lab_01.4` was falsified by its own rerun.** The docstring claimed
+  7–11× across reruns; this execution produced 15.7×. Widened to 7–16× with an instruction to
+  widen rather than tighten. All prose already said "an order of magnitude", so nothing else
+  moved. Also a leftover 1-sigma verdict in 01.5's Evaluation and interview Q4, where the rest of
+  the series had moved to the 2-sigma band.
+
+**Verification.** Outputs were snapshotted before the pass and diffed after, keyed by cell source
+so insertions do not shift the comparison. Result: **six new cells, and exactly one existing
+output changed** — `production_costs`' wall-clock microseconds, which the notebook already states
+are machine- and run-dependent (the artifact figures, 3.8 KB / 5,003.5 KB / 1,326×, are
+unchanged). Every other captured number in the series is byte-identical, so no companion-document
+drift was introduced. `daily_queue_swing` was re-verified byte-identical after its shared-setup
+refactor. `check.py`: 0 fail, 5 warn across 15 files — the same five previously triaged, each
+re-confirmed as a cross-reference to another notebook's captured output (01.6's 0.521/0.557 are
+literally printed by 01.1) or an illustrative round number. `_quiz.md` gained Q48–Q50 with
+answers; `_recap.md` and `_lab/README.md` updated.
+
+**→ Round four independently re-verified and signed off, 2026-09-02.** All three labs re-run
+standalone (exit 0); `daily_queue_swing` and `horizon_tradeoff` confirmed byte-identical after
+their refactors; every number in the round-four summary checked against captured output
+(including the floor-composition cross-check: the floor-0.5 queue on 2026-04-13 returns 37,
+identical to the threshold design's count, as the algebra requires); `build_capacity_queue`'s
+floor-inside-top-k selection verified equivalent to top-k-over-floored; the shared manifest
+hash between the clean and wrong-horizon runs verified from `build_run`'s fingerprint fields;
+`check.py` re-run at 0 fail / 5 triaged warns. Series 01 promoted to `[x]` in CURRICULUM.md
+and stands as the track's conformance benchmark.

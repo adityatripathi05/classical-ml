@@ -10,6 +10,8 @@ Reproduces every captured number and listing in 01.5:
   L4  horizon versus actionability - longer horizons are easier to predict and worth less
   L5  cost asymmetry - the retention economics that pick the operating point
   L6  implicit versus explicit labels - when there is no cancel event to join to
+  L7  the label spec as a versioned, hashed, self-validating artifact - the Stage C
+      production code, and the permanent fix this notebook's incident demands
 
 Scope note: this lab designs labels. The systematic leakage-safe machinery (temporal CV,
 nested selection, the full leakage taxonomy) is series 12's canonical subject.
@@ -21,8 +23,12 @@ Run:  .venv\\Scripts\\python "01-ml-landscape-and-lifecycle/_lab/lab_01.5_proble
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
+import json
+import logging
 import sys
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -37,6 +43,11 @@ HERE = Path(__file__).resolve().parent
 SEED = 42
 CUTOFF = pd.Timestamp("2025-06-30")     # features use data strictly before this instant
 HORIZONS = (90, 180, 365)               # days after the cutoff in which churn counts
+# The extraction date, from _data/SPEC.md ("Window: 2019-01 -> 2026-08-31"). Stated ONCE
+# because two definitions of "when the data ends" is two answers to the censoring
+# question: the last invoice is 2026-08-28 and the last churn event 2026-08-30, so
+# deriving it from either column would quietly shorten the observable horizon.
+DATA_END = pd.Timestamp("2026-08-31")
 
 # Retention economics, stated so they can be argued with (SPEC-style assumptions).
 SAVE_RATE = 0.30            # share of true churners retained when contacted in time
@@ -266,8 +277,7 @@ def incident(f: pd.DataFrame, horizon: int = 180) -> None:
 def horizon_tradeoff(f: pd.DataFrame) -> None:
     print(f"  {'horizon':<24}{'base rate':>12}{'precision@k':>14}{'lift':>8}"
           f"{'median days to churn':>24}")
-    data_end = pd.Timestamp("2026-08-31")
-    observable = (data_end - CUTOFF).days      # 427: the longest horizon the data can see
+    observable = (DATA_END - CUTOFF).days      # 427: the longest horizon the data can see
     for h in (30, 90, 180, 365, 730):
         d = label_frame(f, CUTOFF, h, active_only=True)
         rng = np.random.default_rng(SEED)
@@ -459,6 +469,191 @@ def implicit_vs_explicit(f: pd.DataFrame, inv: pd.DataFrame, horizon: int = 180)
     print("  bounds how quickly any model trained on it can react")
 
 
+# ------------------------------ L7: the label spec as a production artifact (Stage C)
+
+LOG = logging.getLogger("payflow.labelspec")
+
+
+class LabelSpecError(ValueError):
+    """A spec that is internally inconsistent, or that this data cannot support."""
+
+
+@dataclass(frozen=True)
+class LabelSpec:
+    """The reviewed document the permanent fix demands, as an object a pipeline enforces.
+
+    Stage C here is deliberately not a FastAPI service. What has to survive contact with
+    production in a framing notebook is a DEFINITION, and the incident this notebook
+    opens with is a definition that travelled into a funding decision without its
+    provenance attached. So the production shape is a versioned, hashed, self-validating
+    artifact that 01.3's run manifest cites and that CI can refuse to build labels
+    without - the same discipline a schema migration gets, applied to the target column.
+
+    Frozen on purpose: a spec that can be edited in place is a spec whose fingerprint
+    lies. `apply()` returns a NEW spec carrying the measured base rate.
+    """
+
+    name: str
+    version: int
+    unit: str                    # the grain one row represents
+    population: str              # "active_at_cutoff" | "all_signed_up"
+    cutoff: str                  # ISO-8601; features use data STRICTLY before this
+    horizon_days: int            # 0 means "no horizon" - a state, not an event
+    event: str
+    owner: str
+    # Measured by apply(), never asserted by an author.
+    base_rate: float | None = None
+    n_rows: int | None = None
+    n_positives: int | None = None
+
+    # ------------------------------------------------------------------ identity
+    def canonical(self) -> str:
+        """Stable JSON for hashing. Measured fields are excluded: re-measuring the same
+        definition on more data must not look like a different definition."""
+        d = {k: v for k, v in asdict(self).items()
+             if k not in ("base_rate", "n_rows", "n_positives")}
+        return json.dumps(d, sort_keys=True, separators=(",", ":"))
+
+    def fingerprint(self) -> str:
+        return hashlib.sha256(self.canonical().encode()).hexdigest()[:12]
+
+    # ---------------------------------------------------------------- validation
+    def violations(self, data_end: pd.Timestamp) -> list[str]:
+        """Every reason this spec must not reach a model or a business case.
+
+        Empty list means usable. Each rule below is one clause of this notebook's
+        incident, written down so it fails a build instead of a quarter.
+        """
+        out: list[str] = []
+        cutoff = pd.Timestamp(self.cutoff)
+        if self.horizon_days <= 0:
+            out.append("no horizon: the target is a STATE ('is a churner'), not a "
+                       "time-bounded event - it can be recognised, not predicted")
+        elif cutoff + pd.Timedelta(days=self.horizon_days) > data_end:
+            over = (cutoff + pd.Timedelta(days=self.horizon_days) - data_end).days
+            out.append(f"right-censored: the horizon ends {over} days past the data "
+                       f"({data_end:%Y-%m-%d}), so this is really the label 'churns "
+                       f"before the data ends'")
+        if self.population != "active_at_cutoff":
+            out.append(f"population '{self.population}' admits customers who had already "
+                       f"churned at the cutoff - the model would recognise the past")
+        if self.unit != "customer":
+            out.append(f"unit '{self.unit}' is not the decision unit (one contact "
+                       f"per customer)")
+        return out
+
+    def require_valid(self, data_end: pd.Timestamp) -> None:
+        bad = self.violations(data_end)
+        if bad:
+            raise LabelSpecError(f"{self.name}@v{self.version} is not usable:\n  - "
+                                 + "\n  - ".join(bad))
+
+    # ------------------------------------------------------------------- use
+    def apply(self, f: pd.DataFrame,
+              data_end: pd.Timestamp) -> tuple[pd.DataFrame, "LabelSpec"]:
+        """The ONLY supported way to build this label, so spec and data cannot drift."""
+        self.require_valid(data_end)
+        d = label_frame(f, pd.Timestamp(self.cutoff), self.horizon_days,
+                        active_only=self.population == "active_at_cutoff")
+        measured = replace(self, base_rate=round(float(d["churns_in_horizon"].mean()), 4),
+                           n_rows=int(len(d)),
+                           n_positives=int(d["churns_in_horizon"].sum()))
+        LOG.info("applied %s@v%d fp=%s n=%d positives=%d base_rate=%.4f", self.name,
+                 self.version, self.fingerprint(), measured.n_rows,
+                 measured.n_positives, measured.base_rate)
+        return d, measured
+
+    def assert_scorable(self, frame: pd.DataFrame) -> None:
+        """The acceptance test the Prevention list promises: no already-churned customer
+        may reach a contact list. Cheap, and it would have caught this incident on the
+        first run rather than at the quarter's end."""
+        cutoff = pd.Timestamp(self.cutoff)
+        bad = int((frame["churn_date"].notna() & (frame["churn_date"] <= cutoff)).sum())
+        if bad:
+            raise LabelSpecError(
+                f"{bad:,} rows had already churned at {cutoff:%Y-%m-%d}: a contact list "
+                f"built from this frame offers win-back discounts to customers who left")
+
+    def manifest_entry(self) -> dict:
+        """What 01.3's manifest config block carries, so a base rate never travels
+        without the definition that produced it."""
+        return {"label_spec": f"{self.name}@v{self.version}",
+                "fingerprint": self.fingerprint(), "population": self.population,
+                "horizon_days": self.horizon_days, "base_rate": self.base_rate}
+
+    def save(self, path: Path) -> Path:
+        path.write_text(json.dumps(asdict(self), indent=2, sort_keys=True),
+                        encoding="utf-8")
+        return path
+
+    @classmethod
+    def load(cls, path: Path) -> "LabelSpec":
+        return cls(**json.loads(path.read_text(encoding="utf-8")))
+
+
+# The spec the Q4 campaign actually ran on, reconstructed from its business case, and
+# the one that survives review. Both are checked below rather than described.
+CAMPAIGN_SPEC = LabelSpec(
+    name="retention_churn", version=1, unit="customer", population="all_signed_up",
+    cutoff="2025-06-30", horizon_days=0, event="customer has a churn_date at any time",
+    owner="growth-analytics")
+
+OPERATIONAL_SPEC = LabelSpec(
+    name="retention_churn", version=2, unit="customer", population="active_at_cutoff",
+    cutoff="2025-06-30", horizon_days=180,
+    event="churn_date falls in (cutoff, cutoff + 180 days]", owner="growth-analytics")
+
+
+def label_spec_artifact(f: pd.DataFrame,
+                        artifact_dir: Path | None = None) -> LabelSpec:
+    """Build, validate, measure and persist the spec that survives review (Stage C)."""
+    ok = OPERATIONAL_SPEC
+    print(f"  data ends {DATA_END:%Y-%m-%d} (the extraction date, from _data/SPEC.md); "
+          f"the gate runs\n  before a single model is fitted\n")
+    print(f"  {ok.name}@v{ok.version}  population={ok.population}  "
+          f"horizon={ok.horizon_days}d  -> ACCEPTED ({len(ok.violations(DATA_END))} "
+          f"violations)")
+    frame, measured = ok.apply(f, DATA_END)
+    print(f"    measured on {measured.n_rows:,} rows: {measured.n_positives:,} "
+          f"positives, base rate {measured.base_rate}")
+    print(f"    manifest entry: {json.dumps(measured.manifest_entry())}")
+    ok.assert_scorable(frame)
+    print(f"    assert_scorable(the spec's own frame): PASS")
+
+    if artifact_dir is not None:
+        path = measured.save(artifact_dir / "label_spec.json")
+        reloaded = LabelSpec.load(path)
+        print(f"    written to {path.name}, re-read, fingerprint stable: "
+              f"{reloaded.fingerprint() == measured.fingerprint()} "
+              f"({measured.fingerprint()})")
+    return measured
+
+
+def label_spec_rejects(f: pd.DataFrame) -> None:
+    """The same gate, run against the spec the Q4 campaign actually shipped on.
+
+    Nothing here fits a model. Every rejection below was available on day one from the
+    definition alone, which is what makes the absence of this artifact the incident.
+    """
+    for spec, why in ((CAMPAIGN_SPEC, "the spec the campaign ran on"),
+                      (replace(OPERATIONAL_SPEC, version=3, horizon_days=730),
+                       "the 'more positives' variant someone proposes next")):
+        bad = spec.violations(DATA_END)
+        print(f"  {spec.name}@v{spec.version} - {why}")
+        print(f"    population={spec.population}  horizon={spec.horizon_days}d  "
+              f"-> REJECTED, {len(bad)} violation(s)")
+        for v in bad:
+            print(f"      - {v}")
+
+    naive = f.loc[f["signup_date"] <= pd.Timestamp(OPERATIONAL_SPEC.cutoff)]
+    print(f"\n  and the acceptance test, against the contact pool actually scored:")
+    try:
+        OPERATIONAL_SPEC.assert_scorable(naive)
+        print(f"    assert_scorable: PASS")
+    except LabelSpecError as exc:
+        print(f"    assert_scorable: FAIL - {exc}")
+
+
 def main() -> None:
     cus, inv, tck = load_universe()
     f = features_as_of(cus, inv, tck, CUTOFF)
@@ -487,6 +682,13 @@ def main() -> None:
     print("L6  IMPLICIT VERSUS EXPLICIT LABELS")
     print("=" * 78)
     implicit_vs_explicit(f, inv)
+
+    print("\n" + "=" * 78)
+    print("L7  THE LABEL SPEC AS A PRODUCTION ARTIFACT")
+    print("=" * 78)
+    label_spec_artifact(f)
+    print()
+    label_spec_rejects(f)
 
 
 if __name__ == "__main__":

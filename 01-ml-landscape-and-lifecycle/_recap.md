@@ -16,9 +16,9 @@ the seeded `_data/` universe.
 | 01.1 Rules or Learning? | The dunning rule, a logistic model, a gradient-boosting check, and a value metric | Both models beat the rule on precision (0.446, 0.453 vs 0.425) and **lost to it on money** ($49,665, $50,549 vs $51,362) |
 | 01.2 First Contact | The six-table universe, grain tests, join guards, a `Money` type, a nine-check contract | Summing `amount` across currencies overstated billings **34.21x**; the invoice/payment join moved 23,525 rows (12,564 dropped, 10,961 added) for a net of −1,603 |
 | 01.3 Reproducibility | Split lottery, seed-sensitivity audit, run manifest, `reproduce()` | `random_state` on the estimator **changes nothing**; the unpinned split moves the model's own precision by 0.0378, while the **paired** model-minus-rule delta moves only 0.0068 — so the claimed gain survives |
-| 01.4 Taxonomy | Four framings of one table, the API-as-taxonomy probe, capacity selection | A fixed threshold gives daily queues of **28 to 53 against a roster of 48 — matching it on none of twenty days**; top-*k* guarantees the size and catches **590 late invoices against 215** — while precision *falls*, because the queue is larger |
-| 01.5 Problem Framing | Label design space, break-even derivation, cost curve | Break-even precision **0.5556** against 0.0739 delivered — the model was never the bottleneck; and `predict_proba` under `class_weight="balanced"` is not a probability |
-| 01.6 Lifecycle | Eight instrumented stages, a seven-gate suite, defect injection | 5 of 6 injected defects caught offline; the wrong horizon reached production, and the survivorship defect could not be injected at all — it had to be measured |
+| 01.4 Taxonomy | Four framings of one table, the API-as-taxonomy probe, capacity selection, and `build_capacity_queue` — the serving contract as code | A fixed threshold gives daily queues of **28 to 53 against a roster of 48 — matching it on none of twenty days**; top-*k* guarantees the size and catches **590 late invoices against 215** — while precision *falls*, because the queue is larger |
+| 01.5 Problem Framing | Label design space, break-even derivation, cost curve, and `LabelSpec` — the reviewed, hashed label artifact | Break-even precision **0.5556** against 0.0739 delivered — the model was never the bottleneck; and `predict_proba` under `class_weight="balanced"` is not a probability |
+| 01.6 Lifecycle | Eight instrumented stages, a seven-gate suite, defect injection, and `release_gate()` — the suite as a CI verdict with an exit code | 5 of 6 injected defects caught offline; the wrong horizon reached production, and the survivorship defect could not be injected at all — it had to be measured |
 
 ## Incidents and the general lesson each carries
 
@@ -50,7 +50,10 @@ the seeded `_data/` universe.
 6. **Contracts over conventions.** Data contracts at ingestion, serving contracts at output, type
    constraints where a silent error is possible.
 7. **Written specs are what make checks possible.** A label spec and a scoring-population
-   definition in the manifest config block; undocumented intent cannot be gated.
+   definition in the manifest config block; undocumented intent cannot be gated. The series
+   ships this rather than recommending it: 01.5's `LabelSpec` is frozen, fingerprinted and the
+   only supported way its label gets built, and 01.6's `release_gate()` restates on every run
+   the three risks no assertion over a run can reach.
 
 ## Weak spots this series deliberately left open
 
@@ -88,7 +91,13 @@ queues are 28–53, not 4–23); 01.4 judged its framing gap against a band borr
 different comparison (measured properly, the verdict flips to "indistinguishable"); and 01.6
 carried a "barely moves ranking" story that its own +0.0337 dose-response contradicted.
 
-Two of those are worth carrying as lessons in their own right, because they are the kind of
+A fourth pass then closed the structural items the third had deliberately left open, and the
+largest of them was real: Stage C in 01.4, 01.5 and 01.6 was analysis rather than production
+code, so three notebooks argued for an artifact none of them built. They now build all three —
+the capacity queue, the label spec, the release gate — and each is the permanent fix its own
+incident demanded, which is why the sections read as a payoff rather than an appendix.
+
+Three of these are worth carrying as lessons in their own right, because they are the kind of
 mistake that survives a clean test suite:
 
 - **A comparison can be better determined than either number in it.** The series originally
@@ -100,6 +109,11 @@ mistake that survives a clean test suite:
   precision, 01.6's leakage mechanism was wrong, 01.5's cancellation argument was a non-sequitur.
   Each corrected version is a stronger argument than the one it replaced, and all of them were
   found by reading against the evidence rather than by any automated check.
+- **A notebook that recommends an artifact and does not build it has not finished the argument.**
+  01.5's permanent fix demanded a label spec for three drafts before one existed. The gap was
+  invisible to every mechanical check, because prose describing an artifact and code building one
+  are indistinguishable to a linter — and prose is cheaper to write, which is exactly why it
+  accumulates.
 
 ## How to revise this series
 

@@ -9,6 +9,8 @@ Reproduces every captured number and listing in 01.6:
   L4  detection distance - the stage a defect enters versus the earliest gate that can
       see it, which is what "where projects die" actually measures
   L5  the retrain decision, as a function rather than a meeting
+  L6  the gate suite as a release gate - blocking vs advisory, a JSON verdict, an exit
+      code, and the blind spots it prints on every run (Stage C)
 
 Scale note: the training pool is subsampled to keep a notebook run near a minute; the
 mechanics and the ordering of results are unaffected, the absolute precisions are lower
@@ -21,6 +23,8 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import json
+import logging
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -359,6 +363,80 @@ def report(r: Run, title: str) -> dict[str, bool]:
     return results
 
 
+# ------------------- the gate suite as a release gate (Stage C production code)
+
+LOG = logging.getLogger("payflow.dunning.release")
+
+# Which gates stop a release. G7 is advisory on purpose: it is a mean-rate tripwire
+# (see its rename note), so one window's rate gap is a reason to look, not to block.
+BLOCKING = frozenset(GATES) - {"G7 calibration"}
+
+# The runner's own blind spots, printed on EVERY run so they are reviewed rather than
+# forgotten. Each is a mis-specification - a property of the question asked, not of any
+# artifact this run produced - which is precisely why no assertion over this run can
+# reach it. This notebook measured both: the wrong-horizon defect ships with all gates
+# green, and the survivorship defect could not be injected at all.
+UNGATED_RISKS = (
+    ("label spec vs operational trigger",
+     "nothing here records the decision the label is meant to feed, so nothing can "
+     "compare them; 01.5's label spec is the artifact that makes this gateable"),
+    ("training population vs scoring population",
+     "the test set is drawn through the same join as training and inherits the "
+     "identical filter, so the metric is silent about rows that never arrived"),
+    ("intervention economics",
+     "break-even precision is a property of the offer, not of the run"),
+)
+
+
+def release_gate(r: Run, blocking: frozenset[str] = BLOCKING) -> dict:
+    """Evaluate every gate and return a machine-readable ship/block verdict.
+
+    Returns a dict rather than printing, so the same function backs the CI job, the
+    deploy API and this notebook. A gate that fails without blocking is reported, not
+    swallowed - the difference between "we knew and accepted it" and "nobody looked".
+    """
+    gates = []
+    for name, fn in GATES.items():
+        ok, detail = fn(r)
+        gates.append({"gate": name, "status": "PASS" if ok else "FAIL",
+                      "detail": detail, "blocking": name in blocking})
+    blocked = [g["gate"] for g in gates if g["status"] == "FAIL" and g["blocking"]]
+    advisory = [g["gate"] for g in gates if g["status"] == "FAIL" and not g["blocking"]]
+    verdict = {"verdict": "BLOCK" if blocked else "SHIP",
+               "manifest": r.manifest_hash, "gates": gates,
+               "blocked_by": blocked, "advisory_failures": advisory,
+               "ungated_risks": [name for name, _ in UNGATED_RISKS],
+               "exit_code": 1 if blocked else 0}
+    LOG.info("release gate %s manifest=%s blocked_by=%s", verdict["verdict"],
+             r.manifest_hash, blocked or "-")
+    return verdict
+
+
+def release_gate_cli(r: Run, label: str, artifact_dir: Path | None = None) -> int:
+    """The CI entry point: human-readable summary, JSON artifact, exit code."""
+    v = release_gate(r)
+    marks = "".join("." if g["status"] == "PASS" else
+                    ("X" if g["blocking"] else "!") for g in v["gates"])
+    print(f"  {label:<34} [{marks}]  {v['verdict']:<5} exit={v['exit_code']}  "
+          f"manifest={v['manifest']}")
+    for g in v["gates"]:
+        if g["status"] == "FAIL":
+            kind = "BLOCKING" if g["blocking"] else "advisory"
+            print(f"      {kind:<9} {g['gate']:<24} {g['detail']}")
+    if artifact_dir is not None:
+        path = artifact_dir / f"release_{v['manifest']}.json"
+        path.write_text(json.dumps(v, indent=2), encoding="utf-8")
+        print(f"      verdict written to {path.name}")
+    return v["exit_code"]
+
+
+def print_ungated_risks() -> None:
+    """A release gate that never says what it cannot see reads as coverage it lacks."""
+    print("\n  what this gate CANNOT check, restated on every run:")
+    for name, why in UNGATED_RISKS:
+        print(f"    - {name}:\n        {why}")
+
+
 def random_split_doseresponse(df_dedup: pd.DataFrame) -> None:
     """Hold the test rows fixed; vary the contamination SHARE deliberately."""
     drift = lab11.windows(df_dedup)["test_drift"]
@@ -517,6 +595,14 @@ def main() -> None:
                    "hold: within tolerance")
         print(f"  {label:<26} calibration gap {gap:.3f}   model {model_p:.4f} vs rule "
               f"{rule_p:.4f}   -> {verdict}")
+
+    print("\n" + "=" * 78)
+    print("L6  THE GATE SUITE AS A RELEASE GATE")
+    print("=" * 78)
+    for label, r in [("clean run", clean), ("leaked feature", leak),
+                     ("wrong horizon", wrong)]:
+        release_gate_cli(r, label)
+    print_ungated_risks()
 
 
 if __name__ == "__main__":
