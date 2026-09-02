@@ -5,18 +5,22 @@ and **live progress** as series are authored. Scope changes are proposed as patc
 the pre-flight currency check in `CLAUDE.md`), approved, then folded in here with a
 version bump.
 
-Curriculum baseline: **v0.3, 2026-09-01** — series-01 pre-flight currency check applied
-(patches P1–P7 approved 2026-09-01; see Currency log). v0.2 was the full redesign of the
-2019 structure into a modern DS/ML/DL path (v0.1 mirrored the legacy folders one-to-one;
-see Legacy mapping).
+Curriculum baseline: **v0.4, 2026-09-02** — series-02 pre-flight currency check applied
+(scope line now names NEP 50 promotion, StringDType and Generator-API randomness; verified
+against the pinned numpy 2.5.2, incl. the 2.5 dtype-set/chararray deprecations and
+`descending=` sorts). v0.3 (2026-09-01) applied the series-01 pre-flight patches P1–P7.
+v0.2 was the full redesign of the 2019 structure into a modern DS/ML/DL path (v0.1
+mirrored the legacy folders one-to-one; see Legacy mapping).
 
 Authoring rules for every notebook: [AUTHORING-GUIDE.md](AUTHORING-GUIDE.md).
 Track overview: [README.md](README.md).
 
 Legend: `[ ]` todo · `[~]` draft · `[r]` in review · `[x]` done.
 
-**Progress: 1/35 series authored** — series 01 authored and reviewed end-to-end; held at
-`[r]` with open findings (see `01-ml-landscape-and-lifecycle/_review.md`), not yet `done`.
+**Progress: 1/35 series done** — series 01 authored, reviewed end-to-end over three rounds,
+structural items closed in a fourth pass, and that pass independently re-verified (see
+`01-ml-landscape-and-lifecycle/_review.md`). Signed off and promoted to `[x]` 2026-09-02;
+series 01 is now the track's conformance benchmark (AUTHORING-GUIDE §11).
 
 ---
 
@@ -50,8 +54,8 @@ Lanes: **F** foundations · **T** toolkit · **M** math · **D** data ·
 
 | # | Series | Lane | Level | Depends on | Scope (2026-27) | Status |
 |---|---|---|---|---|---|---|
-| 01 | The ML Landscape & Project Lifecycle | F | B | — | Rules-vs-learning as an engineering decision, the PayFlow data universe (`_data/`), reproducibility as a contract, taxonomy of learning problems, problem framing → learnable target, the project lifecycle and where projects die | `[r]` |
-| 02 | NumPy & Vectorized Computing | T | B | 01 | ndarrays, broadcasting, vectorization, numerical dtypes, numpy 2.x semantics incl. the **2019→2026 migration thread** (removed aliases, copy semantics — P5), memory layout & performance | `[ ]` |
+| 01 | The ML Landscape & Project Lifecycle | F | B | — | Rules-vs-learning as an engineering decision, the PayFlow data universe (`_data/`), reproducibility as a contract, taxonomy of learning problems, problem framing → learnable target, the project lifecycle and where projects die | `[x]` |
+| 02 | NumPy & Vectorized Computing | T | B | 01 | ndarrays, broadcasting, vectorization, numerical dtypes (NEP 50 promotion, StringDType), numpy 2.x semantics incl. the **2019→2026 migration thread** (removed aliases, copy semantics — P5), Generator-API randomness, memory layout & performance | `[ ]` |
 | 03 | Pandas & Modern DataFrames | T | B | 02 | pandas 3.x (copy-on-write default, `str` dtype, pyarrow backing), joins/groupby/reshaping, **2019→2026 migration thread** (P5), polars interop incl. narwhals-backed `set_output` so polars frames flow through sklearn pipelines (P7), larger-than-memory tactics | `[ ]` |
 | 04 | Data Visualization | T | B | 03 | matplotlib/seaborn/plotly, statistical plots, diagnostics plots used throughout the track, dashboard-grade figures | `[ ]` |
 | 05 | Linear Algebra for ML | M | I | 02 | Vectors/matrices, norms, projections, eigendecomposition, SVD, condition numbers — implemented in numpy, tied to where each result resurfaces | `[ ]` |
@@ -163,25 +167,61 @@ Lane F · Level B (prose floor 1600 words) · 6 notebooks · folder
 `01-ml-landscape-and-lifecycle/` · all examples on PayFlow data.
 
 ```text
-01.1 [r] Rules or Learning? The Decision That Precedes the Model
+01.1 [x] Rules or Learning? The Decision That Precedes the Model
          Hand-written dunning rule vs a learned model on PayFlow late payments.
          A: rule baseline, measured · B: simplest learned alternative, same harness ·
          C: cost-of-ownership + the rule as a permanent production floor.
          Incident: gateway-migration drift (M9) breaks the model while the rule holds.
-01.2 [r] First Contact with the PayFlow Data Universe
+01.2 [x] First Contact with the PayFlow Data Universe
          Six tables, their grain, the joins; first encounter with M1/M2/M7/M14.
          Incident: ARR overstated by summing mixed currencies raw (M2).
-01.3 [r] Reproducibility as an Engineering Contract
+01.3 [x] Reproducibility as an Engineering Contract
          A: nondeterminism biting (score spread across unseeded splits) · B: seeded
          pipeline + fixed splits · C: run manifest (data hash, versions, metrics) + CI.
-01.4 [r] The Taxonomy of Learning Problems — and Which PayFlow Question Is Which
+01.4 [x] The Taxonomy of Learning Problems — and Which PayFlow Question Is Which
          Supervised/unsupervised/self-supervised/RL; regression/classification/ranking/
          clustering; batch vs online; parametric vs non-parametric, each mapped to a
          PayFlow question and the series that owns it. Build collapsed to a shape probe.
-01.5 [r] Problem Framing: From Business Question to Learnable Target
+01.5 [x] Problem Framing: From Business Question to Learnable Target
          "Reduce churn" → three defensible labels (horizon, population, cutoff) → three
          base rates → three different "good" models. Cost asymmetry as a design input.
-01.6 [r] The ML Project Lifecycle and Where Projects Actually Die
+01.6 [x] The ML Project Lifecycle and Where Projects Actually Die
          Framing → labels → baseline → model → eval → ship → monitor → retrain, walked
          end-to-end on PayFlow at shallow depth: the skeleton series 02-35 fill in.
+```
+
+### Series 02 — NumPy & Vectorized Computing (approved 2026-09-02)
+
+Lane T · Level B (prose floor 1600 words) · 7 notebooks · folder
+`02-numpy-vectorized-computing/` · all examples on PayFlow raw exports (allowed to
+suffer, per `_data/SPEC.md` rules of use). Verified against pinned numpy 2.5.2.
+Stage collapse: 02.2/02.4/02.5/02.6 are B/C-only (the library is the subject);
+02.1/02.3/02.7 carry honest Stage A raw builds. Incidents are data-pipeline/numerical
+(lane T). Evaluation sections are assertion/unit-test-shaped (guide §2).
+
+```text
+02.1 [~] The ndarray Memory Model: Buffer, Dtype, Strides — Views vs Copies
+         A: hand-built strided indexing over a flat buffer · copy= semantics, the 2.5
+         dtype-set deprecation → .view(). Incident: an in-place normalize through a
+         slice mutates the canonical array at a distance.
+02.2 [~] Numerical Dtypes & Promotion under NEP 50
+         Windows int64 default vs np.long≡int32; removed aliases; silent uint wraparound;
+         float32 accumulation on money; datetime64; StringDType briefly (pandas str is
+         series 03). Incident: a revenue sum that changed value under the 1.x→2.x port.
+02.3 [~] Broadcasting: The Rules, and the Shapes That Lie
+         A: explicit-loop equivalents prove what broadcasting computes. Incident:
+         (n,) − (n,1) silently builds an (n,n) intermediate — wrong number, huge memory.
+02.4 [~] Indexing & Selection: Masks, Fancy Indexing, and the View–Copy Boundary
+         Basic vs advanced indexing; the write-that-vanishes; where/select; argsort and
+         descending=. Incident: flags written into a fancy-indexed selection are lost.
+02.5 [~] Ufuncs, Reductions & Missing Data
+         axis/keepdims/out=/where=; nan* family; errstate; M4 sentinels poisoning means.
+         Incident: one NaN nulls a monthly rollup while the job stays green.
+02.6 [ ] Random Numbers & Reproducible Sampling
+         default_rng, bit generators, spawn for parallel streams, legacy API contrast —
+         the mechanics beneath 01.3's seed audit. Incident: a shared legacy global seed
+         makes "independent" bootstrap samples identical.
+02.7 [ ] Memory Layout & Performance: Vectorize, Then Measure
+         Contiguity, temporaries, in-place ops; timing discipline per 01.4. Incident: a
+         vectorized rewrite allocates GB-scale temporaries and slows the nightly job.
 ```
