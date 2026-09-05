@@ -29,11 +29,12 @@ exactly one `## Answers`, last section, and every `Q<n>` matched by an `A<n>` (m
 emphasis tolerated, so `**Q1.**` counts). Directory mode also warns (S03) when a folder
 contains nothing checkable, so a mistyped path cannot masquerade as a passing run.
 
-**X01 — companion-document drift (directory mode only).** `_quiz.md` and `_recap.md` quote
-results from the notebooks, so when a notebook is corrected they go stale *silently* — there
-is no execution to fail and no output to contradict. X01 pools every number the series'
-notebooks actually printed and flags figures in the companion documents that are not in that
-pool. This rule exists because the same class of error slipped through twice: a notebook was
+**X01 — companion-document drift (directory mode only).** `_quiz.md`, `_recap.md` and
+`_cheatsheet.md` quote results from the notebooks, so when a notebook is corrected they go
+stale *silently* — there is no execution to fail and no output to contradict. X01 pools every
+number the series' notebooks actually printed and flags figures in the companion documents
+that are not in that pool. (`_cheatsheet.md` is the series-close decision-card lookup layer —
+guide §11; S04 warns while it is missing, mirroring S02 for `_recap.md`.) This rule exists because the same class of error slipped through twice: a notebook was
 fixed, its recap and quiz kept teaching the superseded numbers, and every other check stayed
 green. Lab mode: filename pattern,
 docstring naming the notebook, `__main__` guard.

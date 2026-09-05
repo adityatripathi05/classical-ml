@@ -196,7 +196,8 @@ cd "<series-folder>" && ..\.venv\Scripts\python -m jupyter nbconvert --to notebo
    on it.
 2. Update the notebook's status in `CURRICULUM.md` (`[ ]` → `[~]`).
 3. Deliver **one notebook only** per response — never batch, even if asked to hurry.
-4. If the series' last notebook: also write `_recap.md` and `_lab/README.md`, set the
+4. If the series' last notebook: also write `_recap.md`, `_cheatsheet.md` (the decision-card
+   lookup layer — style and contents defined in guide §11) and `_lab/README.md`, set the
    series statuses to `[r]`, and run the whole-folder check:
    `.venv\Scripts\python _tools/check.py "<series-folder>"`.
 

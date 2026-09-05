@@ -494,6 +494,19 @@ first. After a series' last notebook, write `_recap.md` in the series folder —
 built, a table of the incidents/experiments with the general lesson each carries,
 invariants established, and what the next series assumes.
 
+Also at series close, write **`_cheatsheet.md`** — the fast-lookup layer the notebooks
+deliberately are not. It is a **decision card, not a syntax listing** (the 2019 notes'
+feature-per-cell density is the anti-pattern: it produced recognition, not recall, and
+rotted silently). Target one page. Contents, in order: the series' **rules** as imperative
+one-liners; a **traps table** (symptom → mechanism → probe/fix — each incident distilled to
+one row); the few **formulas and numbers worth carrying** (only figures that exist in a
+notebook's captured output — `check.py` X01 enforces this, same as `_quiz.md`/`_recap.md`);
+and **decision rules** ("when X → do Y"). Every row cites its notebook id, so the sheet is a
+jump table into depth, never a substitute for it. Pure API signatures stay with the official
+docs; retrieval practice stays with `_quiz.md` — the cheatsheet is for the ten-second
+mid-task lookup ("what's the rule again?"), and it is regenerated whenever a notebook's
+claims change, like every companion document.
+
 Each series carries ONE `_quiz.md` in the series root — **questions first**, answers in a
 single `## Answers` section at the BOTTOM (never adjacent), one to three lines each, naming
 the source notebook. Interleave sources; mix incident replays ("debug this"), derivation

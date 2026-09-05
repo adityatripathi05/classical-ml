@@ -619,6 +619,14 @@ def check_series(path: Path, strict: bool) -> list[Report]:
         reports.append(r)
     elif notebooks and recap.exists():
         reports.append(check_companion(recap, decs, ints))
+    cheat = path / "_cheatsheet.md"
+    if notebooks and not cheat.exists():
+        r = Report(cheat)
+        r.warn("S04", "_cheatsheet.md not written yet (required when the series completes; "
+                      "guide §11 defines the decision-card style)")
+        reports.append(r)
+    elif notebooks and cheat.exists():
+        reports.append(check_companion(cheat, decs, ints))
     if not reports:
         # A mistyped path that happens to be a directory would otherwise exit 0 and read
         # as a passing check. Say so instead.
